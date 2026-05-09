@@ -191,11 +191,40 @@ func (s MessageService) Delete(userID, id string) error {
 		return Internal("Failed to delete attachments", err)
 	}
 
-	if err := database.DB.Unscoped().Delete(&msg).Error; err != nil {
+	// Filesystem cleanup for farewell letter attachments; DB records are cascaded by Message.BeforeDelete.
+	var letters []models.FarewellLetter
+	if err := database.ForTenant(userID).Where("message_id = ?", id).Find(&letters).Error; err != nil {
+		return Internal("Failed to fetch farewell letters", err)
+	}
+	for _, letter := range letters {
+		if err := msgFileService.DeleteFarewellAttachmentsByLetterID(userID, letter.ID); err != nil {
+			return Internal("Failed to delete farewell letter attachments", err)
+		}
+	}
+
+	if err := database.ForTenant(userID).Unscoped().Delete(&msg).Error; err != nil {
 		return Internal("Failed to delete message", err)
 	}
 
 	return nil
+}
+
+// BulkHeartbeat resets last_seen for all active messages of a user and clears sent reminders.
+func (s MessageService) BulkHeartbeat(userID string) error {
+	now := time.Now().UTC()
+	return database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := database.TenantTx(tx, userID).Model(&models.Message{}).
+			Where("status = ?", models.StatusActive).
+			Update("last_seen", now).Error; err != nil {
+			return Internal("failed to update heartbeats", err)
+		}
+		if err := tx.Model(&models.MessageReminder{}).
+			Where("message_id IN (SELECT id FROM messages WHERE user_id = ? AND status = ?)", userID, models.StatusActive).
+			Update("sent", false).Error; err != nil {
+			return Internal("failed to reset reminders", err)
+		}
+		return nil
+	})
 }
 
 func (s MessageService) Update(userID, id, content string, recipientEmails []string, triggerDuration int, reminders []int) (models.Message, error) {
@@ -240,7 +269,7 @@ func (s MessageService) Update(userID, id, content string, recipientEmails []str
 	msg.TriggerDuration = triggerDuration
 	msg.LastSeen = time.Now()
 	err = database.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Save(&msg).Error; err != nil {
+		if err := database.TenantTx(tx, userID).Save(&msg).Error; err != nil {
 			return Internal("Failed to update message", err)
 		}
 

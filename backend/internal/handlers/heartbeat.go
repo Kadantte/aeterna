@@ -1,25 +1,29 @@
 package handlers
 
 import (
-	"time"
-
-	"github.com/alpyxn/aeterna/backend/internal/database"
-	"github.com/alpyxn/aeterna/backend/internal/models"
+	"github.com/alpyxn/aeterna/backend/internal/ports"
 	"github.com/alpyxn/aeterna/backend/internal/services"
 	"github.com/gofiber/fiber/v2"
-	"gorm.io/gorm"
 )
 
-var settingsService = services.SettingsService{}
+// HeartbeatHandlers groups quick-heartbeat and token route handlers.
+type HeartbeatHandlers struct {
+	messages ports.MessageServicePort
+	settings ports.SettingsServicePort
+}
 
-// QuickHeartbeat handles heartbeat via token link (no auth required)
-func QuickHeartbeat(c *fiber.Ctx) error {
+func NewHeartbeatHandlers(messages ports.MessageServicePort, settings ports.SettingsServicePort) *HeartbeatHandlers {
+	return &HeartbeatHandlers{messages: messages, settings: settings}
+}
+
+// QuickHeartbeat handles token-based heartbeat (no session auth required).
+func (h *HeartbeatHandlers) QuickHeartbeat(c *fiber.Ctx) error {
 	token := c.Params("token")
 	if token == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "Token required"})
 	}
 
-	settings, err := settingsService.GetByHeartbeatToken(token)
+	settings, err := h.settings.GetByHeartbeatToken(token)
 	if err != nil {
 		return writeError(c, err)
 	}
@@ -27,25 +31,7 @@ func QuickHeartbeat(c *fiber.Ctx) error {
 	userID := settings.UserID
 
 	if c.Method() == "POST" {
-		err = database.DB.Transaction(func(tx *gorm.DB) error {
-			now := time.Now().UTC()
-
-			if err := database.TenantTx(tx, userID).Model(&models.Message{}).
-				Where("status = ?", models.StatusActive).
-				Update("last_seen", now).Error; err != nil {
-				return err
-			}
-
-			if err := tx.Model(&models.MessageReminder{}).
-				Where("message_id IN (SELECT id FROM messages WHERE user_id = ? AND status = ?)", userID, models.StatusActive).
-				Update("sent", false).Error; err != nil {
-				return err
-			}
-
-			return nil
-		})
-
-		if err != nil {
+		if err := h.messages.BulkHeartbeat(userID); err != nil {
 			return writeError(c, services.Internal("Failed to update heartbeats", err))
 		}
 
@@ -56,10 +42,10 @@ func QuickHeartbeat(c *fiber.Ctx) error {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { 
+        body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #fafafa; 
-            color: #333; 
+            background: #fafafa;
+            color: #333;
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -96,10 +82,10 @@ func QuickHeartbeat(c *fiber.Ctx) error {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { 
+        body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: #333; 
+            color: #333;
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -116,14 +102,14 @@ func QuickHeartbeat(c *fiber.Ctx) error {
             max-width: 400px;
             width: 100%;
         }
-        h1 { 
-            font-size: 1.5rem; 
-            font-weight: 600; 
+        h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
             margin-bottom: 0.5rem;
             color: #1a1a1a;
         }
-        p { 
-            color: #666; 
+        p {
+            color: #666;
             font-size: 0.95rem;
             margin-bottom: 2rem;
             line-height: 1.5;
@@ -153,10 +139,10 @@ func QuickHeartbeat(c *fiber.Ctx) error {
             cursor: not-allowed;
             transform: none;
         }
-        .footer { 
-            margin-top: 2rem; 
-            font-size: 0.75rem; 
-            color: #999; 
+        .footer {
+            margin-top: 2rem;
+            font-size: 0.75rem;
+            color: #999;
         }
         .loading {
             display: none;
@@ -182,10 +168,10 @@ func QuickHeartbeat(c *fiber.Ctx) error {
             e.preventDefault();
             const button = document.getElementById('heartbeatButton');
             const loading = document.getElementById('loading');
-            
+
             button.disabled = true;
             loading.style.display = 'block';
-            
+
             fetch(window.location.href, {
                 method: 'POST',
                 headers: {
@@ -215,13 +201,13 @@ func QuickHeartbeat(c *fiber.Ctx) error {
 	return c.SendString(html)
 }
 
-// GetHeartbeatToken returns the heartbeat token for authenticated users
-func GetHeartbeatToken(c *fiber.Ctx) error {
+// GetToken returns the quick-heartbeat token for the authenticated user.
+func (h *HeartbeatHandlers) GetToken(c *fiber.Ctx) error {
 	userID, err := currentUserID(c)
 	if err != nil {
 		return writeError(c, err)
 	}
-	settings, err := settingsService.Get(userID)
+	settings, err := h.settings.Get(userID)
 	if err != nil {
 		return writeError(c, err)
 	}

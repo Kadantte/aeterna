@@ -5,15 +5,15 @@ import (
 	"time"
 
 	"github.com/alpyxn/aeterna/backend/internal/middleware"
-	"github.com/alpyxn/aeterna/backend/internal/models"
+	"github.com/alpyxn/aeterna/backend/internal/ports"
 	"github.com/alpyxn/aeterna/backend/internal/services"
 	"github.com/gofiber/fiber/v2"
 )
 
 type registerRequest struct {
-	Email       string `json:"email"`
-	Password    string `json:"password"`
-	OwnerEmail  string `json:"owner_email"`
+	Email      string `json:"email"`
+	Password   string `json:"password"`
+	OwnerEmail string `json:"owner_email"`
 }
 
 type loginRequest struct {
@@ -21,16 +21,23 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 
-var authService = services.AuthService{}
+// AuthHandlers groups all authentication-related route handlers.
+type AuthHandlers struct {
+	auth ports.AuthServicePort
+}
 
-func SetupStatus(c *fiber.Ctx) error {
-	configured, err := authService.IsConfigured()
+func NewAuthHandlers(auth ports.AuthServicePort) *AuthHandlers {
+	return &AuthHandlers{auth: auth}
+}
+
+func (h *AuthHandlers) SetupStatus(c *fiber.Ctx) error {
+	configured, err := h.auth.IsConfigured()
 	if err != nil {
 		return writeError(c, err)
 	}
 	out := fiber.Map{"configured": configured}
 	if configured {
-		allow, err := authService.AdditionalRegistrationOpen()
+		allow, err := h.auth.AdditionalRegistrationOpen()
 		if err != nil {
 			return writeError(c, err)
 		}
@@ -41,9 +48,8 @@ func SetupStatus(c *fiber.Ctx) error {
 	return c.JSON(out)
 }
 
-// SetupMasterPassword is the initial install: creates the first user (same as Register when no users exist).
-func SetupMasterPassword(c *fiber.Ctx) error {
-	configured, err := authService.IsConfigured()
+func (h *AuthHandlers) SetupMasterPassword(c *fiber.Ctx) error {
+	configured, err := h.auth.IsConfigured()
 	if err != nil {
 		return writeError(c, err)
 	}
@@ -56,65 +62,67 @@ func SetupMasterPassword(c *fiber.Ctx) error {
 		return writeError(c, services.BadRequest("Invalid request body", err))
 	}
 	if req.Email == "" && req.Password != "" {
-		// Backward compatibility: old clients sent only password + owner_email
 		req.Email = req.OwnerEmail
 	}
-	recoveryKey, user, err := authService.RegisterFirstUser(req.Email, req.Password, req.OwnerEmail)
+	recoveryKey, user, err := h.auth.RegisterFirstUser(req.Email, req.Password, req.OwnerEmail)
 	if err != nil {
 		return writeError(c, err)
 	}
-	if err := issueSessionCookie(c, user.ID); err != nil {
+	if err := h.issueSessionCookie(c, user.ID); err != nil {
 		return writeError(c, err)
 	}
 	return c.JSON(fiber.Map{"success": true, "recovery_key": recoveryKey})
 }
 
-// Register creates the first account or an additional account when ALLOW_REGISTRATION=true.
-func Register(c *fiber.Ctx) error {
+func (h *AuthHandlers) Register(c *fiber.Ctx) error {
 	var req registerRequest
 	if err := c.BodyParser(&req); err != nil {
 		return writeError(c, services.BadRequest("Invalid request body", err))
 	}
 
-	configured, err := authService.IsConfigured()
+	configured, err := h.auth.IsConfigured()
 	if err != nil {
 		return writeError(c, err)
 	}
 	var recoveryKey string
-	var user models.User
+	var userID string
 	if !configured {
-		recoveryKey, user, err = authService.RegisterFirstUser(req.Email, req.Password, req.OwnerEmail)
+		rk, u, err := h.auth.RegisterFirstUser(req.Email, req.Password, req.OwnerEmail)
+		if err != nil {
+			return writeError(c, err)
+		}
+		recoveryKey, userID = rk, u.ID
 	} else {
-		recoveryKey, user, err = authService.RegisterAdditionalUser(req.Email, req.Password, req.OwnerEmail)
+		rk, u, err := h.auth.RegisterAdditionalUser(req.Email, req.Password, req.OwnerEmail)
+		if err != nil {
+			return writeError(c, err)
+		}
+		recoveryKey, userID = rk, u.ID
 	}
-	if err != nil {
-		return writeError(c, err)
-	}
-	if err := issueSessionCookie(c, user.ID); err != nil {
+	if err := h.issueSessionCookie(c, userID); err != nil {
 		return writeError(c, err)
 	}
 	return c.JSON(fiber.Map{"success": true, "recovery_key": recoveryKey})
 }
 
-// Login authenticates with email and password.
-func Login(c *fiber.Ctx) error {
+func (h *AuthHandlers) Login(c *fiber.Ctx) error {
 	var req loginRequest
 	if err := c.BodyParser(&req); err != nil {
 		return writeError(c, services.BadRequest("Invalid request body", err))
 	}
-	user, err := authService.Login(req.Email, req.Password)
+	user, err := h.auth.Login(req.Email, req.Password)
 	if err != nil {
 		middleware.RecordFailedLogin(c.IP())
 		return writeError(c, err)
 	}
 	middleware.RecordSuccessfulLogin(c.IP())
-	if err := issueSessionCookie(c, user.ID); err != nil {
+	if err := h.issueSessionCookie(c, user.ID); err != nil {
 		return writeError(c, err)
 	}
 	return c.JSON(fiber.Map{"success": true})
 }
 
-func ResetMasterPassword(c *fiber.Ctx) error {
+func (h *AuthHandlers) ResetMasterPassword(c *fiber.Ctx) error {
 	var req struct {
 		Email       string `json:"email"`
 		RecoveryKey string `json:"recovery_key"`
@@ -124,26 +132,25 @@ func ResetMasterPassword(c *fiber.Ctx) error {
 		return writeError(c, services.BadRequest("Invalid request body", err))
 	}
 
-	newRecoveryKey, err := authService.ResetPasswordWithRecovery(req.Email, req.RecoveryKey, req.NewPassword)
+	newRecoveryKey, err := h.auth.ResetPasswordWithRecovery(req.Email, req.RecoveryKey, req.NewPassword)
 	if err != nil {
 		middleware.RecordFailedLogin(c.IP())
 		return writeError(c, err)
 	}
 	middleware.RecordSuccessfulLogin(c.IP())
 
-	user, err := authService.Login(req.Email, req.NewPassword)
+	user, err := h.auth.Login(req.Email, req.NewPassword)
 	if err != nil {
 		return writeError(c, err)
 	}
-	if err := issueSessionCookie(c, user.ID); err != nil {
+	if err := h.issueSessionCookie(c, user.ID); err != nil {
 		return writeError(c, err)
 	}
-
 	return c.JSON(fiber.Map{"success": true, "recovery_key": newRecoveryKey})
 }
 
-// VerifyMasterPassword is kept for backward compatibility: same as Login with email in body.
-func VerifyMasterPassword(c *fiber.Ctx) error {
+// VerifyMasterPassword is kept for backward compatibility: same as Login.
+func (h *AuthHandlers) VerifyMasterPassword(c *fiber.Ctx) error {
 	var req struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
@@ -154,34 +161,34 @@ func VerifyMasterPassword(c *fiber.Ctx) error {
 	if req.Email == "" {
 		return writeError(c, services.BadRequest("Email is required", nil))
 	}
-	user, err := authService.Login(req.Email, req.Password)
+	user, err := h.auth.Login(req.Email, req.Password)
 	if err != nil {
 		middleware.RecordFailedLogin(c.IP())
 		return writeError(c, err)
 	}
 	middleware.RecordSuccessfulLogin(c.IP())
-	if err := issueSessionCookie(c, user.ID); err != nil {
+	if err := h.issueSessionCookie(c, user.ID); err != nil {
 		return writeError(c, err)
 	}
 	return c.JSON(fiber.Map{"success": true})
 }
 
-func SessionStatus(c *fiber.Ctx) error {
+func (h *AuthHandlers) SessionStatus(c *fiber.Ctx) error {
 	token := c.Cookies("aeterna_session")
-	userID, err := authService.VerifySessionToken(token)
+	userID, err := h.auth.VerifySessionToken(token)
 	if err != nil {
 		return writeError(c, err)
 	}
 	return c.JSON(fiber.Map{"authorized": true, "user_id": userID})
 }
 
-func Logout(c *fiber.Ctx) error {
+func (h *AuthHandlers) Logout(c *fiber.Ctx) error {
 	clearSessionCookie(c)
 	return c.JSON(fiber.Map{"success": true})
 }
 
-func issueSessionCookie(c *fiber.Ctx, userID string) error {
-	token, exp, err := authService.IssueSessionToken(userID)
+func (h *AuthHandlers) issueSessionCookie(c *fiber.Ctx, userID string) error {
+	token, exp, err := h.auth.IssueSessionToken(userID)
 	if err != nil {
 		return err
 	}

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"github.com/alpyxn/aeterna/backend/internal/models"
+	"github.com/alpyxn/aeterna/backend/internal/ports"
 	"github.com/alpyxn/aeterna/backend/internal/services"
 	"github.com/gofiber/fiber/v2"
 )
@@ -12,21 +13,28 @@ type webhookRequest struct {
 	Enabled bool   `json:"enabled"`
 }
 
-var webhookStore = services.WebhookStore{}
+// WebhookHandlers groups webhook CRUD route handlers.
+type WebhookHandlers struct {
+	webhooks ports.WebhookStorePort
+}
 
-func ListWebhooks(c *fiber.Ctx) error {
+func NewWebhookHandlers(webhooks ports.WebhookStorePort) *WebhookHandlers {
+	return &WebhookHandlers{webhooks: webhooks}
+}
+
+func (h *WebhookHandlers) List(c *fiber.Ctx) error {
 	userID, err := currentUserID(c)
 	if err != nil {
 		return writeError(c, err)
 	}
-	items, err := webhookStore.List(userID)
+	items, err := h.webhooks.List(userID)
 	if err != nil {
 		return writeError(c, err)
 	}
 	return c.JSON(items)
 }
 
-func CreateWebhook(c *fiber.Ctx) error {
+func (h *WebhookHandlers) Create(c *fiber.Ctx) error {
 	userID, err := currentUserID(c)
 	if err != nil {
 		return writeError(c, err)
@@ -40,14 +48,14 @@ func CreateWebhook(c *fiber.Ctx) error {
 		Secret:  req.Secret,
 		Enabled: req.Enabled,
 	}
-	created, err := webhookStore.Create(userID, item)
+	created, err := h.webhooks.Create(userID, item)
 	if err != nil {
 		return writeError(c, err)
 	}
 	return c.JSON(created)
 }
 
-func UpdateWebhook(c *fiber.Ctx) error {
+func (h *WebhookHandlers) Update(c *fiber.Ctx) error {
 	userID, err := currentUserID(c)
 	if err != nil {
 		return writeError(c, err)
@@ -62,20 +70,20 @@ func UpdateWebhook(c *fiber.Ctx) error {
 		Secret:  req.Secret,
 		Enabled: req.Enabled,
 	}
-	updated, err := webhookStore.Update(userID, id, item)
+	updated, err := h.webhooks.Update(userID, id, item)
 	if err != nil {
 		return writeError(c, err)
 	}
 	return c.JSON(updated)
 }
 
-func DeleteWebhook(c *fiber.Ctx) error {
+func (h *WebhookHandlers) Delete(c *fiber.Ctx) error {
 	userID, err := currentUserID(c)
 	if err != nil {
 		return writeError(c, err)
 	}
 	id := c.Params("id")
-	if err := webhookStore.Delete(userID, id); err != nil {
+	if err := h.webhooks.Delete(userID, id); err != nil {
 		return writeError(c, err)
 	}
 	return c.JSON(fiber.Map{"success": true})
