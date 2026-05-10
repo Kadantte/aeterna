@@ -39,7 +39,7 @@ const AlertDialogTrigger = ({ asChild, children }) => {
         })
     }
 
-    return <button onClick={() => setOpen(true)}>{children}</button>
+    return <button type="button" onClick={() => setOpen(true)}>{children}</button>
 }
 
 const AlertDialogContent = () => {
@@ -62,6 +62,7 @@ const AlertDialogAction = ({ onClick, children, className = "" }) => {
     const { setOpen } = useContext(AlertDialogContext)
     return (
         <button
+            type="button"
             onClick={(e) => {
                 onClick?.(e)
                 setOpen(false)
@@ -77,6 +78,7 @@ const AlertDialogCancel = ({ onClick, children }) => {
     const { setOpen } = useContext(AlertDialogContext)
     return (
         <button
+            type="button"
             onClick={(e) => {
                 onClick?.(e)
                 setOpen(false)

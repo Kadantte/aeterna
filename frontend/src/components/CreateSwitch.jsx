@@ -4,52 +4,15 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Lock, Mail, Clock, Loader2, AlertCircle, CheckCircle, Send, Paperclip, X, Upload, Settings as SettingsIcon, Plus } from 'lucide-react';
+import { Lock, Mail, Clock, Loader2, AlertCircle, CheckCircle, Send, Paperclip, X, Upload, Settings as SettingsIcon, Plus, ArrowRight, MessageSquare, Pencil } from 'lucide-react';
 import { Select } from "@/components/ui/select"
-import { apiRequest, uploadFile } from "@/lib/api"
+import { apiRequest, uploadFile, createFarewellLetter, uploadFarewellAttachment } from "@/lib/api"
+import FarewellLetters from "@/components/FarewellLetters"
+import { ALLOWED_EXTENSIONS, MAX_FILE_SIZE, MAX_FILES, MAX_TOTAL_SIZE, EMAIL_REGEX, TIME_PRESETS, REMINDER_PRESETS, FAREWELL_DELAY_PRESETS } from "@/lib/constants"
+import { formatFileSize, formatMinutes, formatFarewellDelay } from "@/lib/formatters"
+import { parseRecipientEmails } from "@/lib/parsers"
+import { applyDurationToReminders, addReminderValue, removeReminderValue } from "@/lib/reminder-utils"
 
-const ALLOWED_EXTENSIONS = ['.pdf', '.txt', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.zip'];
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
-const MAX_FILES = 5;
-const MAX_TOTAL_SIZE = 25 * 1024 * 1024; // 25 MB
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-function parseRecipientEmails(input) {
-    const parts = input
-        .split(/[\n,;]+/)
-        .map((value) => value.trim())
-        .filter(Boolean);
-
-    const unique = [];
-    const seen = new Set();
-    for (const email of parts) {
-        const key = email.toLowerCase();
-        if (!seen.has(key)) {
-            seen.add(key);
-            unique.push(email);
-        }
-    }
-    return unique;
-}
-
-function formatFileSize(bytes) {
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-}
-
-function formatMinutes(minutes) {
-    if (minutes >= 1440) {
-        // e.g., 2880 -> 2, 3600 -> 2.5
-        const days = Number((minutes / 1440).toFixed(1));
-        return `${days} Day${days !== 1 ? 's' : ''} Before`;
-    }
-    if (minutes >= 60) {
-        const hours = Number((minutes / 60).toFixed(1));
-        return `${hours} Hour${hours !== 1 ? 's' : ''} Before`;
-    }
-    return `${minutes} Minutes Before`;
-}
 
 export default function CreateSwitch({ setRoute }) {
     const [message, setMessage] = useState('');
@@ -65,58 +28,88 @@ export default function CreateSwitch({ setRoute }) {
     const [showAttachments, setShowAttachments] = useState(false);
     const [dragOver, setDragOver] = useState(false);
     const [smtpError, setSmtpError] = useState(false);
+    const [createdMessageId, setCreatedMessageId] = useState(null);
+    const [pendingLetters, setPendingLetters] = useState([]);
+    const [showLetterForm, setShowLetterForm] = useState(false);
+    const [editingLetterIdx, setEditingLetterIdx] = useState(null);
+    const [letterRecipient, setLetterRecipient] = useState('');
+    const [letterSubject, setLetterSubject] = useState('');
+    const [letterContent, setLetterContent] = useState('');
+    const [letterDelay, setLetterDelay] = useState(1440);
+    const [letterFormError, setLetterFormError] = useState(null);
+    const [letterFiles, setLetterFiles] = useState([]);
     const fileInputRef = useRef(null);
 
-    const timePresets = [
-        { label: '1 Minute (Debug)', value: 1 },
-        { label: '15 Minutes (Test)', value: 15 },
-        { label: '1 Hour', value: 60 },
-        { label: '1 Day', value: 1440 },
-        { label: '3 Days', value: 4320 },
-        { label: '1 Week', value: 10080 },
-        { label: '2 Weeks', value: 20160 },
-        { label: '1 Month', value: 43200 },
-        { label: '3 Months', value: 129600 },
-        { label: '6 Months', value: 259200 },
-        { label: '1 Year', value: 525600 },
-    ];
+    const resetLetterForm = () => {
+        setLetterRecipient('');
+        setLetterSubject('');
+        setLetterContent('');
+        setLetterDelay(1440);
+        setLetterFiles([]);
+        setEditingLetterIdx(null);
+        setShowLetterForm(false);
+        setLetterFormError(null);
+    };
 
-    const reminderPresets = [
-        { label: '15 Minutes Before', value: 15 },
-        { label: '1 Hour Before', value: 60 },
-        { label: '12 Hours Before', value: 720 },
-        { label: '1 Day Before', value: 1440 },
-        { label: '2 Days Before', value: 2880 },
-        { label: '3 Days Before', value: 4320 },
-        { label: '5 Days Before', value: 7200 },
-        { label: '10 Days Before', value: 14400 },
-    ];
+    const savePendingLetter = () => {
+        const recipient = letterRecipient.trim();
+        const subject = letterSubject.trim();
+        const content = letterContent;
+        if (!EMAIL_REGEX.test(recipient)) {
+            setLetterFormError('Enter a valid recipient email.');
+            return;
+        }
+        if (!subject) {
+            setLetterFormError('Subject is required.');
+            return;
+        }
+        if (!content.trim()) {
+            setLetterFormError('Letter content cannot be empty.');
+            return;
+        }
+        const payload = {
+            recipient_email: recipient,
+            subject,
+            content,
+            delay_minutes: letterDelay,
+            files: letterFiles,
+        };
+        if (editingLetterIdx != null) {
+            setPendingLetters(prev => prev.map((l, i) => i === editingLetterIdx ? { ...l, ...payload } : l));
+        } else {
+            setPendingLetters(prev => [...prev, payload]);
+        }
+        resetLetterForm();
+    };
+
+    const editPendingLetter = (idx) => {
+        const l = pendingLetters[idx];
+        setLetterRecipient(l.recipient_email);
+        setLetterSubject(l.subject);
+        setLetterContent(l.content);
+        setLetterDelay(l.delay_minutes);
+        setLetterFiles(l.files || []);
+        setEditingLetterIdx(idx);
+        setShowLetterForm(true);
+        setLetterFormError(null);
+    };
+
+    const removePendingLetter = (idx) => {
+        setPendingLetters(prev => prev.filter((_, i) => i !== idx));
+    };
+
 
     const handleDurationChange = (newDuration) => {
         setDuration(newDuration);
-        // Add sensible default reminders if none are valid for the new duration
-        const validReminders = reminders.filter(r => r < newDuration);
-        if (validReminders.length === 0) {
-            if (newDuration >= 1440) { // >= 1 day
-                setReminders([newDuration / 2]); // 50%
-            } else if (newDuration >= 60) { // >= 1 hour
-                setReminders([15]); // 15 mins
-            } else {
-                setReminders([]);
-            }
-        } else {
-            setReminders(validReminders);
-        }
+        setReminders((prev) => applyDurationToReminders(prev, newDuration));
     };
 
     const addReminder = (value) => {
-        if (!reminders.includes(value) && value < duration) {
-            setReminders([...reminders, value].sort((a, b) => b - a)); // sort descending (longest before trigger first)
-        }
+        setReminders((prev) => addReminderValue(prev, value, duration));
     };
 
     const removeReminder = (value) => {
-        setReminders(reminders.filter(r => r !== value));
+        setReminders((prev) => removeReminderValue(prev, value));
     };
 
     const validateFile = (file) => {
@@ -320,14 +313,38 @@ export default function CreateSwitch({ setRoute }) {
                 }
             }
 
-            setSuccess(true);
+            // Step 3: Create pending farewell letters (if any)
+            const letterErrors = [];
+            for (let i = 0; i < pendingLetters.length; i++) {
+                const letterData = pendingLetters[i];
+                setUploadProgress(`Creating farewell letter ${i + 1}/${pendingLetters.length}...`);
+                try {
+                    const savedLetter = await createFarewellLetter(result.id, {
+                        recipient_email: letterData.recipient_email,
+                        subject: letterData.subject,
+                        content: letterData.content,
+                        delay_minutes: letterData.delay_minutes,
+                    });
+                    for (const file of letterData.files || []) {
+                        setUploadProgress(`Uploading attachment for "${letterData.subject}"...`);
+                        await uploadFarewellAttachment(result.id, savedLetter.id, file);
+                    }
+                } catch (letterErr) {
+                    letterErrors.push(`"${letterData.subject}": ${letterErr.message}`);
+                }
+            }
+
             setMessage('');
             setRecipientInput('');
             setRecipientEmails([]);
             setFiles([]);
+            setPendingLetters([]);
+            resetLetterForm();
             setUploadProgress('');
-
-            setTimeout(() => setSuccess(false), 5000);
+            setCreatedMessageId(result.id);
+            if (letterErrors.length > 0) {
+                setError(`Switch created, but ${letterErrors.length} farewell letter(s) failed: ${letterErrors.join('; ')}`);
+            }
         } catch (e) {
             setError(e.message);
         } finally {
@@ -335,6 +352,48 @@ export default function CreateSwitch({ setRoute }) {
             setUploadProgress('');
         }
     };
+
+    if (createdMessageId) {
+        return (
+            <div className="w-full max-w-2xl space-y-6">
+                <div className="text-center space-y-2">
+                    <h1 className="text-2xl font-semibold text-dark-100">Switch activated</h1>
+                    <p className="text-dark-400 text-sm max-w-md mx-auto">
+                        Optionally add farewell letters that will be sent after this switch fires.
+                    </p>
+                </div>
+
+                <Alert className="border-teal-500/20 bg-teal-500/10">
+                    <CheckCircle className="h-4 w-4 text-teal-400" />
+                    <AlertDescription className="text-teal-400">
+                        Switch created. Remember to check in regularly from the Dashboard.
+                    </AlertDescription>
+                </Alert>
+
+                <Card className="glowing-card">
+                    <CardContent className="pt-6">
+                        <FarewellLetters messageId={createdMessageId} />
+                    </CardContent>
+                </Card>
+
+                <div className="flex flex-col sm:flex-row gap-2 justify-end">
+                    <Button
+                        variant="outline"
+                        onClick={() => setCreatedMessageId(null)}
+                        className="border-dark-700 bg-dark-900 hover:bg-dark-800 text-dark-200"
+                    >
+                        <Plus className="w-4 h-4 mr-2" /> Create another switch
+                    </Button>
+                    <Button
+                        onClick={() => setRoute?.('dashboard')}
+                        className="bg-teal-600 hover:bg-teal-500 text-white"
+                    >
+                        Go to Dashboard <ArrowRight className="w-4 h-4 ml-2" />
+                    </Button>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="w-full max-w-2xl space-y-6">
@@ -522,7 +581,7 @@ export default function CreateSwitch({ setRoute }) {
                                 onChange={(e) => handleDurationChange(Number(e.target.value))}
                                 className="bg-dark-950 border-dark-700 text-dark-100"
                             >
-                                {timePresets.map(preset => (
+                                {TIME_PRESETS.map(preset => (
                                     <option key={preset.value} value={preset.value}>
                                         {preset.label}
                                     </option>
@@ -539,12 +598,12 @@ export default function CreateSwitch({ setRoute }) {
                             {reminders.length > 0 ? (
                                 <div className="flex flex-wrap gap-2">
                                     {reminders.map(r => {
-                                        const preset = reminderPresets.find(p => p.value === r);
+                                        const preset = REMINDER_PRESETS.find(p => p.value === r);
                                         const label = preset ? preset.label : formatMinutes(r);
                                         return (
                                             <div key={r} className="flex items-center gap-1 bg-dark-800 text-dark-200 text-xs px-2 py-1 rounded">
                                                 <span>{label}</span>
-                                                <button onClick={() => removeReminder(r)} className="text-dark-400 hover:text-red-400">
+                                                <button type="button" onClick={() => removeReminder(r)} className="text-dark-400 hover:text-red-400">
                                                     <X className="w-3 h-3" />
                                                 </button>
                                             </div>
@@ -567,7 +626,7 @@ export default function CreateSwitch({ setRoute }) {
                                     value={""}
                                 >
                                     <option value="" disabled>Add a reminder...</option>
-                                    {reminderPresets.filter(p => !reminders.includes(p.value) && p.value < duration).map(preset => (
+                                    {REMINDER_PRESETS.filter(p => !reminders.includes(p.value) && p.value < duration).map(preset => (
                                         <option key={preset.value} value={preset.value}>
                                             {preset.label}
                                         </option>
@@ -575,6 +634,179 @@ export default function CreateSwitch({ setRoute }) {
                                 </Select>
                             </div>
                         </div>
+                    </div>
+
+                    {/* Farewell Letters */}
+                    <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                            <label className="text-xs font-medium text-dark-400 flex items-center gap-2">
+                                <MessageSquare className="w-3 h-3" /> Farewell Letters
+                                <span className="text-dark-600 font-normal">(optional)</span>
+                            </label>
+                            {!showLetterForm && (
+                                <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => { setShowLetterForm(true); setEditingLetterIdx(null); }}
+                                    className="border-dark-700 bg-dark-900 hover:bg-dark-800 text-dark-200 h-7 text-xs"
+                                >
+                                    <Plus className="w-3 h-3 mr-1" /> Add letter
+                                </Button>
+                            )}
+                        </div>
+
+                        {showLetterForm && (
+                            <div className="space-y-3 p-3 border border-dark-700 rounded-lg bg-dark-900">
+                                {letterFormError && (
+                                    <p className="text-xs text-red-400">{letterFormError}</p>
+                                )}
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <div className="space-y-1">
+                                        <label className="text-xs font-medium text-dark-400 flex items-center gap-1">
+                                            <Mail className="w-3 h-3" /> Recipient email
+                                        </label>
+                                        <Input
+                                            type="email"
+                                            placeholder="someone@example.com"
+                                            value={letterRecipient}
+                                            onChange={(e) => setLetterRecipient(e.target.value)}
+                                            className="bg-dark-950 border-dark-700 focus:border-teal-500 text-dark-100 placeholder:text-dark-500"
+                                        />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-xs font-medium text-dark-400 flex items-center gap-1">
+                                            <Clock className="w-3 h-3" /> Send delay
+                                        </label>
+                                        <select
+                                            value={letterDelay}
+                                            onChange={(e) => setLetterDelay(Number(e.target.value))}
+                                            className="w-full h-9 rounded-md border border-dark-700 bg-dark-950 text-dark-100 text-sm px-3 focus:outline-none focus:border-teal-500"
+                                        >
+                                            {FAREWELL_DELAY_PRESETS.map(p => (
+                                                <option key={p.value} value={p.value}>{p.label}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-xs font-medium text-dark-400">Subject</label>
+                                    <Input
+                                        type="text"
+                                        placeholder="A farewell message for you"
+                                        value={letterSubject}
+                                        onChange={(e) => setLetterSubject(e.target.value)}
+                                        className="bg-dark-950 border-dark-700 focus:border-teal-500 text-dark-100 placeholder:text-dark-500"
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-xs font-medium text-dark-400">Message</label>
+                                    <Textarea
+                                        placeholder="Write your farewell message..."
+                                        value={letterContent}
+                                        onChange={(e) => setLetterContent(e.target.value)}
+                                        className="min-h-[100px] bg-dark-950 border-dark-700 focus:border-teal-500 text-dark-100 placeholder:text-dark-500"
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <div className="flex items-center justify-between">
+                                        <label className="text-xs font-medium text-dark-400 flex items-center gap-1">
+                                            <Paperclip className="w-3 h-3" /> Attachments
+                                            <span className="text-dark-600 font-normal">({letterFiles.length}/{MAX_FILES})</span>
+                                        </label>
+                                        {letterFiles.length < MAX_FILES && (
+                                            <label className="cursor-pointer flex items-center gap-1 text-xs text-teal-400 hover:text-teal-300">
+                                                <Upload className="w-3 h-3" /> Add file
+                                                <input
+                                                    type="file"
+                                                    className="hidden"
+                                                    accept={ALLOWED_EXTENSIONS.join(',')}
+                                                    onChange={(e) => {
+                                                        const file = e.target.files?.[0];
+                                                        if (!file) return;
+                                                        const err = validateFile(file);
+                                                        if (err) { setLetterFormError(err); e.target.value = ''; return; }
+                                                        const totalSize = letterFiles.reduce((s, f) => s + f.size, 0);
+                                                        if (totalSize + file.size > MAX_TOTAL_SIZE) {
+                                                            setLetterFormError('Total attachment size would exceed 25 MB');
+                                                            e.target.value = '';
+                                                            return;
+                                                        }
+                                                        setLetterFiles(prev => [...prev, file]);
+                                                        e.target.value = '';
+                                                    }}
+                                                />
+                                            </label>
+                                        )}
+                                    </div>
+                                    {letterFiles.length > 0 && (
+                                        <div className="space-y-1">
+                                            {letterFiles.map((file, idx) => (
+                                                <div key={`${file.name}-${idx}`} className="flex items-center justify-between bg-dark-900 border border-dark-700 rounded px-2 py-1.5">
+                                                    <div className="flex items-center gap-2 min-w-0">
+                                                        <Paperclip className="w-3 h-3 text-dark-400 shrink-0" />
+                                                        <span className="text-xs text-dark-200 truncate">{file.name}</span>
+                                                        <span className="text-xs text-dark-500 shrink-0">{formatFileSize(file.size)}</span>
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setLetterFiles(prev => prev.filter((_, i) => i !== idx))}
+                                                        className="text-dark-500 hover:text-red-400 ml-2"
+                                                    >
+                                                        <X className="w-3 h-3" />
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="flex gap-2 justify-end">
+                                    <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={resetLetterForm}
+                                        className="border-dark-700 bg-dark-900 hover:bg-dark-800 text-dark-200"
+                                    >
+                                        Cancel
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        size="sm"
+                                        onClick={savePendingLetter}
+                                        className="bg-teal-600 hover:bg-teal-500 text-white"
+                                    >
+                                        {editingLetterIdx != null ? 'Update letter' : 'Add letter'}
+                                    </Button>
+                                </div>
+                            </div>
+                        )}
+
+                        {pendingLetters.length > 0 && (
+                            <div className="space-y-1.5">
+                                {pendingLetters.map((letter, idx) => (
+                                    <div key={idx} className="flex items-start justify-between gap-3 p-3 border border-dark-700 rounded-lg bg-dark-900">
+                                        <div className="min-w-0 flex-1 space-y-1">
+                                            <span className="text-xs font-medium text-dark-100 truncate block">{letter.subject}</span>
+                                            <div className="flex items-center gap-3 text-xs text-dark-400">
+                                                <span className="flex items-center gap-1"><Mail className="w-3 h-3" />{letter.recipient_email}</span>
+                                                <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{formatFarewellDelay(letter.delay_minutes)}</span>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-1 shrink-0">
+                                            <Button size="sm" variant="ghost" onClick={() => editPendingLetter(idx)}
+                                                className="h-7 w-7 p-0 text-dark-400 hover:text-dark-100 hover:bg-dark-800">
+                                                <Pencil className="w-3 h-3" />
+                                            </Button>
+                                            <Button size="sm" variant="ghost" onClick={() => removePendingLetter(idx)}
+                                                className="h-7 w-7 p-0 text-dark-400 hover:text-red-400 hover:bg-red-950/30">
+                                                <X className="w-3 h-3" />
+                                            </Button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
                     </div>
 
                     {error && (

@@ -23,8 +23,9 @@ function App() {
     checkSession();
   }, []);
 
-  const handleUnlock = () => {
+  const handleUnlock = (target = 'dashboard') => {
     setAuthorized(true);
+    setRoute(target);
   };
 
   const handleLogout = async () => {

@@ -6,57 +6,19 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogTitle, AlertDialogDescription, AlertDialogCancel, AlertDialogAction } from "@/components/ui/alert-dialog"
 import { Mail, Clock, Loader2, Trash2, Heart, AlertCircle, RefreshCw, Inbox, Eye, Pencil, Paperclip, X, Upload, Plus } from 'lucide-react';
 import { apiRequest, uploadFile, deleteAttachment, listAttachments } from "@/lib/api";
+import FarewellLetters from "@/components/FarewellLetters";
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { Textarea } from "@/components/ui/textarea"
 import { Select } from "@/components/ui/select"
+import { ALLOWED_EXTENSIONS, MAX_FILE_SIZE, MAX_FILES, MAX_TOTAL_SIZE, EMAIL_REGEX, TIME_PRESETS, REMINDER_PRESETS } from "@/lib/constants"
+import { formatFileSize, formatMinutes } from "@/lib/formatters"
+import { parseRecipientEmails } from "@/lib/parsers"
+import { applyDurationToReminders, addReminderValue, removeReminderValue } from "@/lib/reminder-utils"
 
-const ALLOWED_EXTENSIONS = ['.pdf', '.txt', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.zip'];
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
-const MAX_FILES = 5;
-const MAX_TOTAL_SIZE = 25 * 1024 * 1024;
 const RECIPIENT_PREVIEW_LIMIT = 3;
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-function parseRecipientEmails(value) {
-    const parts = String(value || '')
-        .split(/[\n,;]+/)
-        .map((entry) => entry.trim())
-        .filter(Boolean);
-
-    const seen = new Set();
-    const unique = [];
-    for (const email of parts) {
-        const key = email.toLowerCase();
-        if (!seen.has(key)) {
-            seen.add(key);
-            unique.push(email);
-        }
-    }
-    return unique;
-}
 
 function formatRecipientEmails(value) {
-    const recipients = parseRecipientEmails(value);
-    return recipients.join(', ');
-}
-
-function formatFileSize(bytes) {
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-}
-
-function formatMinutes(minutes) {
-    if (minutes >= 1440) {
-        // e.g., 2880 -> 2, 3600 -> 2.5
-        const days = Number((minutes / 1440).toFixed(1));
-        return `${days} Day${days !== 1 ? 's' : ''} Before`;
-    }
-    if (minutes >= 60) {
-        const hours = Number((minutes / 60).toFixed(1));
-        return `${hours} Hour${hours !== 1 ? 's' : ''} Before`;
-    }
-    return `${minutes} Minutes Before`;
+    return parseRecipientEmails(value).join(', ');
 }
 
 export default function Dashboard() {
@@ -141,55 +103,18 @@ export default function Dashboard() {
     const [editAttachLoading, setEditAttachLoading] = useState(false);
     const editFileInputRef = useRef(null);
 
-    const timePresets = [
-        { label: '1 Minute (Debug)', value: 1 },
-        { label: '15 Minutes (Test)', value: 15 },
-        { label: '1 Hour', value: 60 },
-        { label: '1 Day', value: 1440 },
-        { label: '3 Days', value: 4320 },
-        { label: '1 Week', value: 10080 },
-        { label: '2 Weeks', value: 20160 },
-        { label: '1 Month', value: 43200 },
-        { label: '3 Months', value: 129600 },
-        { label: '6 Months', value: 259200 },
-        { label: '1 Year', value: 525600 },
-    ];
-
-    const reminderPresets = [
-        { label: '15 Minutes Before', value: 15 },
-        { label: '1 Hour Before', value: 60 },
-        { label: '12 Hours Before', value: 720 },
-        { label: '1 Day Before', value: 1440 },
-        { label: '2 Days Before', value: 2880 },
-        { label: '3 Days Before', value: 4320 },
-        { label: '5 Days Before', value: 7200 },
-        { label: '10 Days Before', value: 14400 },
-    ];
 
     const handleEditDurationChange = (newDuration) => {
         setEditDuration(newDuration);
-        const validReminders = editReminders.filter(r => r < newDuration);
-        if (validReminders.length === 0) {
-            if (newDuration >= 1440) {
-                setEditReminders([newDuration / 2]);
-            } else if (newDuration >= 60) {
-                setEditReminders([15]);
-            } else {
-                setEditReminders([]);
-            }
-        } else {
-            setEditReminders(validReminders);
-        }
+        setEditReminders((prev) => applyDurationToReminders(prev, newDuration));
     };
 
     const addEditReminder = (value) => {
-        if (!editReminders.includes(value) && value < editDuration) {
-            setEditReminders([...editReminders, value].sort((a, b) => b - a)); // sort descending
-        }
+        setEditReminders((prev) => addReminderValue(prev, value, editDuration));
     };
 
     const removeEditReminder = (value) => {
-        setEditReminders(editReminders.filter(r => r !== value));
+        setEditReminders((prev) => removeReminderValue(prev, value));
     };
 
     const openEditDialog = async (message) => {
@@ -814,7 +739,7 @@ export default function Dashboard() {
                                 onChange={(e) => handleEditDurationChange(Number(e.target.value))}
                                 className="bg-dark-950 border-dark-700 text-dark-100"
                             >
-                                {timePresets.map(preset => (
+                                {TIME_PRESETS.map(preset => (
                                     <option key={preset.value} value={preset.value}>
                                         {preset.label}
                                     </option>
@@ -833,12 +758,12 @@ export default function Dashboard() {
                                 {editReminders.length > 0 ? (
                                     <div className="flex flex-wrap gap-2">
                                         {editReminders.map(r => {
-                                            const preset = reminderPresets.find(p => p.value === r);
+                                            const preset = REMINDER_PRESETS.find(p => p.value === r);
                                             const label = preset ? preset.label : formatMinutes(r);
                                             return (
                                                 <div key={r} className="flex items-center gap-1 bg-dark-800 text-dark-200 text-xs px-2 py-1 rounded">
                                                     <span>{label}</span>
-                                                    <button onClick={() => removeEditReminder(r)} className="text-dark-400 hover:text-red-400">
+                                                    <button type="button" onClick={() => removeEditReminder(r)} className="text-dark-400 hover:text-red-400">
                                                         <X className="w-3 h-3" />
                                                     </button>
                                                 </div>
@@ -861,7 +786,7 @@ export default function Dashboard() {
                                         value={""}
                                     >
                                         <option value="" disabled>Add a reminder...</option>
-                                        {reminderPresets.filter(p => !editReminders.includes(p.value) && p.value < editDuration).map(preset => (
+                                        {REMINDER_PRESETS.filter(p => !editReminders.includes(p.value) && p.value < editDuration).map(preset => (
                                             <option key={preset.value} value={preset.value}>
                                                 {preset.label}
                                             </option>
@@ -870,6 +795,9 @@ export default function Dashboard() {
                                 </div>
                             </div>
                         </div>
+                    </div>
+                    <div className="border-t border-dark-700 pt-4 mt-2">
+                        <FarewellLetters messageId={editingMessage?.id} />
                     </div>
                     <div className="flex flex-col-reverse sm:flex-row justify-end gap-2 mt-6">
                         <Button
