@@ -42,6 +42,11 @@ func (s ApplicationSettingsService) SetAllowRegistration(actorUserID string, all
 	return database.DB.Save(&app).Error
 }
 
+// CanManageRegistration returns true if userID is the primary (first) administrator.
+func (s ApplicationSettingsService) CanManageRegistration(userID string) bool {
+	return IsFirstUser(userID)
+}
+
 // EnsureApplicationSettingsRow creates the singleton row if missing.
 func EnsureApplicationSettingsRow() error {
 	var n int64

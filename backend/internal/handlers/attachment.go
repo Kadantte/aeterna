@@ -3,13 +3,21 @@ package handlers
 import (
 	"io"
 
+	"github.com/alpyxn/aeterna/backend/internal/ports"
 	"github.com/alpyxn/aeterna/backend/internal/services"
 	"github.com/gofiber/fiber/v2"
 )
 
-var fileService = services.FileService{}
+// AttachmentHandlers groups switch attachment route handlers.
+type AttachmentHandlers struct {
+	files ports.FileServicePort
+}
 
-func UploadAttachment(c *fiber.Ctx) error {
+func NewAttachmentHandlers(files ports.FileServicePort) *AttachmentHandlers {
+	return &AttachmentHandlers{files: files}
+}
+
+func (h *AttachmentHandlers) Upload(c *fiber.Ctx) error {
 	userID, err := currentUserID(c)
 	if err != nil {
 		return writeError(c, err)
@@ -37,7 +45,7 @@ func UploadAttachment(c *fiber.Ctx) error {
 		mimeType = "application/octet-stream"
 	}
 
-	attachment, err := fileService.Upload(userID, messageID, fileHeader.Filename, mimeType, data)
+	attachment, err := h.files.Upload(userID, messageID, fileHeader.Filename, mimeType, data)
 	if err != nil {
 		return writeError(c, err)
 	}
@@ -48,14 +56,14 @@ func UploadAttachment(c *fiber.Ctx) error {
 	})
 }
 
-func ListAttachments(c *fiber.Ctx) error {
+func (h *AttachmentHandlers) List(c *fiber.Ctx) error {
 	userID, err := currentUserID(c)
 	if err != nil {
 		return writeError(c, err)
 	}
 	messageID := c.Params("id")
 
-	attachments, err := fileService.ListByMessageID(userID, messageID)
+	attachments, err := h.files.ListByMessageID(userID, messageID)
 	if err != nil {
 		return writeError(c, err)
 	}
@@ -63,14 +71,14 @@ func ListAttachments(c *fiber.Ctx) error {
 	return c.JSON(attachments)
 }
 
-func DeleteAttachment(c *fiber.Ctx) error {
+func (h *AttachmentHandlers) Delete(c *fiber.Ctx) error {
 	userID, err := currentUserID(c)
 	if err != nil {
 		return writeError(c, err)
 	}
 	attachmentID := c.Params("attachmentId")
 
-	if err := fileService.Delete(userID, attachmentID); err != nil {
+	if err := h.files.Delete(userID, attachmentID); err != nil {
 		return writeError(c, err)
 	}
 

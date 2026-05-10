@@ -22,21 +22,15 @@ import (
 )
 
 func main() {
-	// Parse CLI flags
 	encryptionKeyFile := flag.String("encryption-key-file", "", "Path to file containing encryption key (fallback, must have 0600 permissions)")
 	flag.Parse()
 
-	// Initialize logging first
 	logging.Init()
 
-	// Initialize encryption key manager (CRITICAL - must happen before any encryption operations)
 	services.InitKeyManager(*encryptionKeyFile)
 
-	// Validate encryption key is available (fail fast if not)
-	// The InitKeyManager already tries to load the key, so we just need to verify it worked
-	// by attempting to use the crypto service
-	cryptoService := services.CryptoService{}
-	_, err := cryptoService.Encrypt("test")
+	cryptoSvc := services.CryptoService{}
+	_, err := cryptoSvc.Encrypt("test")
 	if err != nil {
 		log.Fatalf("FATAL: Failed to initialize encryption key: %v\n\n"+
 			"Please configure one of the following:\n"+
@@ -52,15 +46,24 @@ func main() {
 		if os.Getenv("ALLOWED_ORIGINS") == "" {
 			log.Fatal("ALLOWED_ORIGINS must be set in production")
 		}
-		// Allow * only in simple mode (HTTP-only, IP-based access)
 		if os.Getenv("ALLOWED_ORIGINS") == "*" && os.Getenv("PROXY_MODE") != "simple" {
 			log.Fatal("ALLOWED_ORIGINS cannot be '*' in production (unless using simple mode)")
 		}
 	}
-	// Initialize Database
+
 	database.Connect()
 
-	if err := database.DB.AutoMigrate(&models.User{}, &models.Message{}, &models.MessageReminder{}, &models.Settings{}, &models.Webhook{}, &models.Attachment{}, &models.ApplicationSettings{}); err != nil {
+	if err := database.DB.AutoMigrate(
+		&models.User{},
+		&models.Message{},
+		&models.MessageReminder{},
+		&models.Settings{},
+		&models.Webhook{},
+		&models.Attachment{},
+		&models.ApplicationSettings{},
+		&models.FarewellLetter{},
+		&models.FarewellAttachment{},
+	); err != nil {
 		log.Fatal("Failed to migrate database: ", err)
 	}
 
@@ -72,11 +75,8 @@ func main() {
 		log.Fatal("Failed to ensure application settings: ", err)
 	}
 
-	// Ensure key_fragment has default value for existing records
 	database.DB.Exec("UPDATE messages SET key_fragment = 'local' WHERE key_fragment IS NULL OR key_fragment = '';")
 
-	// Ensure management_token is set for existing records (BeforeCreate hook handles new ones)
-	// For SQLite, we need to update in Go since SQLite doesn't have uuid generation
 	var messagesWithoutToken []models.Message
 	database.DB.Where("management_token IS NULL OR management_token = ''").Find(&messagesWithoutToken)
 	for i := range messagesWithoutToken {
@@ -84,28 +84,44 @@ func main() {
 		database.DB.Save(&messagesWithoutToken[i])
 	}
 
-	// Ensure encrypted_content is not null for existing records
 	database.DB.Exec("UPDATE messages SET encrypted_content = '' WHERE encrypted_content IS NULL;")
-
-	// Ensure webhook_enabled has default value
 	database.DB.Exec("UPDATE settings SET webhook_enabled = 0 WHERE webhook_enabled IS NULL;")
 
-	// Create uploads directory
 	if err := services.EnsureUploadsDir(); err != nil {
 		log.Fatal("Failed to create uploads directory: ", err)
 	}
 
+	// --- Composition root: wire services ---
+	authSvc := services.AuthService{}
+	messageSvc := services.MessageService{}
+	fileSvc := services.FileService{}
+	farewellSvc := services.FarewellService{}
+	settingsSvc := services.SettingsService{}
+	appSettingsSvc := services.ApplicationSettingsService{}
+	webhookStore := services.WebhookStore{}
+	userAdminSvc := services.UserAdminService{}
+
+	// --- Wire handlers ---
+	authH := handlers.NewAuthHandlers(authSvc)
+	messageH := handlers.NewMessageHandlers(messageSvc)
+	heartbeatH := handlers.NewHeartbeatHandlers(messageSvc, settingsSvc)
+	attachH := handlers.NewAttachmentHandlers(fileSvc)
+	settingsH := handlers.NewSettingsHandlers(settingsSvc, appSettingsSvc)
+	webhookH := handlers.NewWebhookHandlers(webhookStore)
+	farewellH := handlers.NewFarewellHandlers(farewellSvc, fileSvc)
+	usersH := handlers.NewUserHandlers(userAdminSvc)
+
+	// --- Wire worker ---
+	w := worker.New(settingsSvc, webhookStore, fileSvc)
+
 	app := fiber.New(fiber.Config{
-		BodyLimit: 12 * 1024 * 1024, // 12MB limit for file uploads
+		BodyLimit: 25 * 1024 * 1024,
 	})
 
-	// Middleware
 	app.Use(requestid.New())
 	app.Use(logger.New(logger.Config{
 		Format: "{\"time\":\"${time}\",\"ip\":\"${ip}\",\"status\":${status},\"method\":\"${method}\",\"path\":\"${path}\",\"latency\":\"${latency}\",\"req_id\":\"${locals:requestid}\"}\n",
 	}))
-
-	// Security headers middleware
 	app.Use(middleware.SecurityHeaders)
 
 	allowedOrigins := os.Getenv("ALLOWED_ORIGINS")
@@ -113,12 +129,9 @@ func main() {
 		allowedOrigins = "http://localhost:5173"
 	}
 
-	// For simple mode (ALLOWED_ORIGINS=*), use dynamic origin to avoid Fiber CORS panic
 	if allowedOrigins == "*" {
 		app.Use(cors.New(cors.Config{
-			AllowOriginsFunc: func(origin string) bool {
-				return true // Allow all origins in simple mode
-			},
+			AllowOriginsFunc: func(origin string) bool { return true },
 			AllowHeaders:     "Origin, Content-Type, Accept",
 			AllowMethods:     "GET, POST, PUT, DELETE, OPTIONS",
 			AllowCredentials: true,
@@ -131,6 +144,7 @@ func main() {
 			AllowCredentials: true,
 		}))
 	}
+
 	app.Use(limiter.New(limiter.Config{
 		Max:        120,
 		Expiration: 1 * time.Minute,
@@ -142,58 +156,58 @@ func main() {
 		},
 	}))
 
-	// Note: CSRF Protection is provided by SameSite=Lax cookies
-	// Additional CSRF token middleware removed as frontend doesn't support it
-	// and SameSite provides sufficient protection for same-site origins
+	// Note: CSRF protection is provided by SameSite=Strict cookies.
+	// SameSite=Strict is stronger than Lax and prevents CSRF for same-site origins.
 
-	// Routes
 	api := app.Group("/api")
 
-	// Public Reveal
-	api.Get("/messages/:id", handlers.GetMessage)
-	api.Get("/setup/status", handlers.SetupStatus)
-	api.Post("/setup", handlers.SetupMasterPassword)
-	api.Post("/auth/register", middleware.AuthRateLimiter, handlers.Register)
-	api.Post("/auth/login", middleware.AuthRateLimiter, handlers.Login)
+	// Public routes
+	api.Get("/messages/:id", messageH.GetPublic)
+	api.Get("/setup/status", authH.SetupStatus)
+	api.Post("/setup", authH.SetupMasterPassword)
+	api.Post("/auth/register", middleware.AuthRateLimiter, authH.Register)
+	api.Post("/auth/login", middleware.AuthRateLimiter, authH.Login)
+	api.Post("/auth/verify", middleware.AuthRateLimiter, authH.VerifyMasterPassword)
+	api.Post("/auth/reset-password", middleware.AuthRateLimiter, authH.ResetMasterPassword)
+	api.Get("/auth/session", authH.SessionStatus)
+	api.Post("/auth/logout", authH.Logout)
+	api.Get("/quick-heartbeat/:token", heartbeatH.QuickHeartbeat)
+	api.Post("/quick-heartbeat/:token", heartbeatH.QuickHeartbeat)
 
-	// Auth endpoints with brute-force protection
-	api.Post("/auth/verify", middleware.AuthRateLimiter, handlers.VerifyMasterPassword)
-	api.Post("/auth/reset-password", middleware.AuthRateLimiter, handlers.ResetMasterPassword)
-	api.Get("/auth/session", handlers.SessionStatus)
-	api.Post("/auth/logout", handlers.Logout)
-
-	// Quick heartbeat (no auth, token-based)
-	// GET: Shows page with button, POST: Triggers heartbeat
-	api.Get("/quick-heartbeat/:token", handlers.QuickHeartbeat)
-	api.Post("/quick-heartbeat/:token", handlers.QuickHeartbeat)
-
-	// Protected Management
+	// Protected routes
 	mgmt := api.Group("/", middleware.MasterAuth)
-	mgmt.Post("/messages", handlers.CreateMessage)
-	mgmt.Get("/messages", handlers.ListMessages)
-	mgmt.Delete("/messages/:id", handlers.DeleteMessage)
-	mgmt.Put("/messages/:id", handlers.UpdateMessage)
-	mgmt.Post("/heartbeat", handlers.Heartbeat)
-	mgmt.Post("/messages/:id/attachments", handlers.UploadAttachment)
-	mgmt.Get("/messages/:id/attachments", handlers.ListAttachments)
-	mgmt.Delete("/messages/:id/attachments/:attachmentId", handlers.DeleteAttachment)
-	mgmt.Get("/webhooks", handlers.ListWebhooks)
-	mgmt.Post("/webhooks", handlers.CreateWebhook)
-	mgmt.Put("/webhooks/:id", handlers.UpdateWebhook)
-	mgmt.Delete("/webhooks/:id", handlers.DeleteWebhook)
+	mgmt.Post("/messages", messageH.Create)
+	mgmt.Get("/messages", messageH.List)
+	mgmt.Delete("/messages/:id", messageH.Delete)
+	mgmt.Put("/messages/:id", messageH.Update)
+	mgmt.Post("/heartbeat", messageH.Heartbeat)
 
-	// Settings
-	mgmt.Get("/settings", handlers.GetSettings)
-	mgmt.Post("/settings", handlers.SaveSettings)
-	mgmt.Post("/settings/test", handlers.TestSMTP)
-	mgmt.Get("/heartbeat-token", handlers.GetHeartbeatToken)
+	mgmt.Post("/messages/:id/attachments", attachH.Upload)
+	mgmt.Get("/messages/:id/attachments", attachH.List)
+	mgmt.Delete("/messages/:id/attachments/:attachmentId", attachH.Delete)
 
-	// User accounts (primary administrator only; enforced in handlers/services)
-	mgmt.Get("/users", handlers.ListUsers)
-	mgmt.Delete("/users/:id", handlers.DeleteUser)
+	mgmt.Get("/messages/:id/farewell-letters", farewellH.List)
+	mgmt.Post("/messages/:id/farewell-letters", farewellH.Create)
+	mgmt.Put("/messages/:id/farewell-letters/:letterId", farewellH.Update)
+	mgmt.Delete("/messages/:id/farewell-letters/:letterId", farewellH.Delete)
+	mgmt.Post("/messages/:id/farewell-letters/:letterId/attachments", farewellH.UploadAttachment)
+	mgmt.Get("/messages/:id/farewell-letters/:letterId/attachments", farewellH.ListAttachments)
+	mgmt.Delete("/messages/:id/farewell-letters/:letterId/attachments/:attachmentId", farewellH.DeleteAttachment)
 
-	// Start Background Worker
-	go worker.Start()
+	mgmt.Get("/webhooks", webhookH.List)
+	mgmt.Post("/webhooks", webhookH.Create)
+	mgmt.Put("/webhooks/:id", webhookH.Update)
+	mgmt.Delete("/webhooks/:id", webhookH.Delete)
+
+	mgmt.Get("/settings", settingsH.Get)
+	mgmt.Post("/settings", settingsH.Save)
+	mgmt.Post("/settings/test", settingsH.TestSMTP)
+	mgmt.Get("/heartbeat-token", heartbeatH.GetToken)
+
+	mgmt.Get("/users", usersH.List)
+	mgmt.Delete("/users/:id", usersH.Delete)
+
+	go w.Start()
 
 	log.Fatal(app.Listen(":3000"))
 }

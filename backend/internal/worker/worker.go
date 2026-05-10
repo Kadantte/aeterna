@@ -9,26 +9,43 @@ import (
 
 	"github.com/alpyxn/aeterna/backend/internal/database"
 	"github.com/alpyxn/aeterna/backend/internal/models"
+	"github.com/alpyxn/aeterna/backend/internal/ports"
 	"github.com/alpyxn/aeterna/backend/internal/services"
 )
 
-var settingsService = services.SettingsService{}
-var emailService = services.EmailService{}
-var webhookService = services.WebhookService{}
-var webhookStore = services.WebhookStore{}
-var workerFileService = services.FileService{}
+// Worker runs the background goroutine that checks heartbeats, reminders, and farewell letters.
+type Worker struct {
+	settings ports.SettingsServicePort
+	webhooks ports.WebhookStorePort
+	files    ports.FileServicePort
+	email    services.EmailService
+	webhook  services.WebhookService
+}
 
-func Start() {
+func New(
+	settings ports.SettingsServicePort,
+	webhooks ports.WebhookStorePort,
+	files ports.FileServicePort,
+) *Worker {
+	return &Worker{
+		settings: settings,
+		webhooks: webhooks,
+		files:    files,
+	}
+}
+
+func (w *Worker) Start() {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		checkReminders()
-		checkHeartbeats()
+		w.checkReminders()
+		w.checkHeartbeats()
+		w.checkFarewellLetters()
 	}
 }
 
-func checkReminders() {
+func (w *Worker) checkReminders() {
 	var reminders []models.MessageReminder
 
 	err := database.DB.Table("message_reminders").
@@ -52,15 +69,15 @@ func checkReminders() {
 		if msg.UserID == "" {
 			continue
 		}
-		settings, err := settingsService.Get(msg.UserID)
+		settings, err := w.settings.Get(msg.UserID)
 		if err != nil || settings.OwnerEmail == "" || settings.SMTPHost == "" {
 			continue
 		}
-		sendReminderEmail(settings, msg, req)
+		w.sendReminderEmail(settings, msg, req)
 	}
 }
 
-func sendReminderEmail(settings models.Settings, msg models.Message, reminder models.MessageReminder) {
+func (w *Worker) sendReminderEmail(settings models.Settings, msg models.Message, reminder models.MessageReminder) {
 	lastSeen := msg.LastSeen
 	triggerTime := lastSeen.Add(time.Duration(msg.TriggerDuration) * time.Minute)
 	remaining := time.Until(triggerTime)
@@ -92,17 +109,19 @@ To confirm you are available, click the link below:
 ---
 Sent by Aeterna`, remainingStr, formatRecipients(msg.RecipientEmail), quickLink)
 
-	err := emailService.SendPlain(settings, []string{settings.OwnerEmail}, subject, body)
+	err := w.email.SendPlain(settings, []string{settings.OwnerEmail}, subject, body)
 	if err != nil {
 		slog.Error("Failed to send reminder email", "error", err, "owner", settings.OwnerEmail)
 		return
 	}
 
-	database.DB.Model(&reminder).Update("sent", true)
+	if err := database.DB.Model(&reminder).Update("sent", true).Error; err != nil {
+		slog.Error("Failed to mark reminder as sent", "error", err, "reminder_id", reminder.ID)
+	}
 	slog.Info("Reminder email sent", "owner", settings.OwnerEmail, "message_id", msg.ID, "minutes_before", reminder.MinutesBefore)
 }
 
-func checkHeartbeats() {
+func (w *Worker) checkHeartbeats() {
 	var messages []models.Message
 
 	err := database.DB.Where(
@@ -118,26 +137,26 @@ func checkHeartbeats() {
 		if msg.UserID == "" {
 			continue
 		}
-		triggerSwitch(msg)
+		w.triggerSwitch(msg)
 	}
 }
 
-func triggerSwitch(msg models.Message) {
+func (w *Worker) triggerSwitch(msg models.Message) {
 	slog.Warn("Switch triggered", "recipient", formatRecipients(msg.RecipientEmail), "id", msg.ID)
 
-	settings, err := settingsService.Get(msg.UserID)
+	settings, err := w.settings.Get(msg.UserID)
 	if err != nil {
 		slog.Error("Failed to load SMTP settings", "error", err, "user_id", msg.UserID)
 		settings = models.Settings{}
 	}
 
 	var emailAttachments []services.EmailAttachment
-	attachments, err := workerFileService.ListByMessageID(msg.UserID, msg.ID)
+	attachments, err := w.files.ListByMessageID(msg.UserID, msg.ID)
 	if err != nil {
 		slog.Error("Failed to load attachments", "error", err, "message_id", msg.ID)
 	} else {
 		for _, att := range attachments {
-			filename, mimeType, data, err := workerFileService.GetDecrypted(msg.UserID, att.ID)
+			filename, mimeType, data, err := w.files.GetDecrypted(msg.UserID, att.ID)
 			if err != nil {
 				slog.Error("Failed to decrypt attachment", "error", err, "attachment_id", att.ID)
 				continue
@@ -151,7 +170,7 @@ func triggerSwitch(msg models.Message) {
 	}
 
 	if settings.SMTPHost != "" {
-		err := emailService.SendTriggeredMessage(settings, msg, emailAttachments)
+		err := w.email.SendTriggeredMessage(settings, msg, emailAttachments)
 		if err != nil {
 			slog.Error("Failed to send email", "error", err, "recipient", formatRecipients(msg.RecipientEmail))
 		} else {
@@ -161,23 +180,27 @@ func triggerSwitch(msg models.Message) {
 		slog.Info("Mock email", "recipient", formatRecipients(msg.RecipientEmail), "attachments", len(emailAttachments))
 	}
 
-	webhooks, err := webhookStore.ListEnabledForUser(msg.UserID)
+	webhooks, err := w.webhooks.ListEnabledForUser(msg.UserID)
 	if err != nil {
 		slog.Error("Failed to load webhooks", "error", err)
 	} else if len(webhooks) > 0 {
 		slog.Info("Webhook delivery attempt", "count", len(webhooks), "recipient", formatRecipients(msg.RecipientEmail))
-		if err := webhookService.SendTriggerWebhooks(webhooks, msg); err != nil {
+		if err := w.webhook.SendTriggerWebhooks(webhooks, msg); err != nil {
 			slog.Error("Failed to deliver webhook", "error", err, "recipient", formatRecipients(msg.RecipientEmail))
 		} else {
 			slog.Info("Webhook delivered", "count", len(webhooks), "recipient", formatRecipients(msg.RecipientEmail))
 		}
 	}
 
+	now := time.Now()
 	msg.Status = models.StatusTriggered
-	database.DB.Save(&msg)
+	msg.TriggeredAt = &now
+	if err := database.ForTenant(msg.UserID).Save(&msg).Error; err != nil {
+		slog.Error("Failed to persist triggered status", "error", err, "message_id", msg.ID)
+	}
 
 	if len(attachments) > 0 {
-		if err := workerFileService.DeleteByMessageID(msg.UserID, msg.ID); err != nil {
+		if err := w.files.DeleteByMessageID(msg.UserID, msg.ID); err != nil {
 			slog.Error("Failed to clean up attachments", "error", err, "message_id", msg.ID)
 		} else {
 			slog.Info("Attachments cleaned up", "message_id", msg.ID, "count", len(attachments))
@@ -185,16 +208,16 @@ func triggerSwitch(msg models.Message) {
 	}
 
 	if settings.OwnerEmail != "" && settings.SMTPHost != "" {
-		sendOwnerNotification(settings, msg, webhooks)
+		w.sendOwnerNotification(settings, msg, webhooks)
 	}
 }
 
-func sendOwnerNotification(settings models.Settings, msg models.Message, webhooks []models.Webhook) {
+func (w *Worker) sendOwnerNotification(settings models.Settings, msg models.Message, webhooks []models.Webhook) {
 	webhookInfo := ""
 	if len(webhooks) > 0 {
 		webhookInfo = "\n\nTriggered Webhooks:\n"
-		for _, w := range webhooks {
-			webhookInfo += fmt.Sprintf("- %s\n", w.URL)
+		for _, wh := range webhooks {
+			webhookInfo += fmt.Sprintf("- %s\n", wh.URL)
 		}
 	}
 
@@ -207,12 +230,92 @@ Recipient: %s%s
 
 Sent by Aeterna`, formatRecipients(msg.RecipientEmail), webhookInfo)
 
-	err := emailService.SendPlain(settings, []string{settings.OwnerEmail}, subject, body)
+	err := w.email.SendPlain(settings, []string{settings.OwnerEmail}, subject, body)
 	if err != nil {
 		slog.Error("Failed to send owner notification", "error", err, "owner", settings.OwnerEmail)
 	} else {
 		slog.Info("Owner notified of delivery", "owner", settings.OwnerEmail, "recipient", formatRecipients(msg.RecipientEmail))
 	}
+}
+
+func (w *Worker) checkFarewellLetters() {
+	var letters []models.FarewellLetter
+
+	err := database.DB.Table("farewell_letters").
+		Select("farewell_letters.*").
+		Joins("JOIN messages ON messages.id = farewell_letters.message_id").
+		Where("farewell_letters.status = ?", models.FarewellStatusPending).
+		Where("messages.status = ?", models.StatusTriggered).
+		Where("messages.triggered_at IS NOT NULL").
+		Where("datetime(messages.triggered_at, '+' || CAST(farewell_letters.delay_minutes AS TEXT) || ' minutes') <= datetime('now')").
+		Where("farewell_letters.deleted_at IS NULL").
+		Find(&letters).Error
+
+	if err != nil {
+		slog.Error("Error checking farewell letters", "error", err)
+		return
+	}
+
+	for _, letter := range letters {
+		if letter.UserID == "" {
+			continue
+		}
+		w.sendFarewellLetter(letter)
+	}
+}
+
+func (w *Worker) sendFarewellLetter(letter models.FarewellLetter) {
+	settings, err := w.settings.Get(letter.UserID)
+	if err != nil || settings.SMTPHost == "" {
+		slog.Error("SMTP not configured for farewell letter", "letter_id", letter.ID, "user_id", letter.UserID)
+		return
+	}
+
+	decrypted, err := services.CryptoService{}.Decrypt(letter.Content)
+	if err != nil {
+		slog.Error("Failed to decrypt farewell letter content", "letter_id", letter.ID, "error", err)
+		return
+	}
+
+	rawAttachments, err := w.files.ListFarewellAttachmentsByLetterID(letter.UserID, letter.ID)
+	if err != nil {
+		slog.Error("Failed to load farewell attachments", "letter_id", letter.ID, "error", err)
+	}
+
+	var emailAttachments []services.EmailAttachment
+	for _, att := range rawAttachments {
+		filename, mimeType, data, err := w.files.GetFarewellAttachmentDecrypted(letter.UserID, att.ID)
+		if err != nil {
+			slog.Error("Failed to decrypt farewell attachment", "attachment_id", att.ID, "error", err)
+			continue
+		}
+		emailAttachments = append(emailAttachments, services.EmailAttachment{
+			Filename: filename,
+			MimeType: mimeType,
+			Data:     data,
+		})
+	}
+
+	if err := w.email.SendFarewellLetter(settings, letter.RecipientEmail, letter.Subject, decrypted, emailAttachments); err != nil {
+		slog.Error("Failed to send farewell letter", "letter_id", letter.ID, "recipient", letter.RecipientEmail, "error", err)
+		return
+	}
+
+	now := time.Now()
+	if err := database.ForTenant(letter.UserID).Model(&letter).Updates(map[string]any{
+		"status":  models.FarewellStatusSent,
+		"sent_at": now,
+	}).Error; err != nil {
+		slog.Error("Failed to mark farewell letter as sent", "error", err, "letter_id", letter.ID)
+	}
+
+	if len(rawAttachments) > 0 {
+		if err := w.files.DeleteFarewellAttachmentsByLetterID(letter.UserID, letter.ID); err != nil {
+			slog.Error("Failed to clean up farewell attachments", "letter_id", letter.ID, "error", err)
+		}
+	}
+
+	slog.Info("Farewell letter sent", "letter_id", letter.ID, "recipient", letter.RecipientEmail)
 }
 
 func formatRecipients(value string) string {

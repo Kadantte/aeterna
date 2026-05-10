@@ -22,3 +22,11 @@ func (u *User) BeforeCreate(tx *gorm.DB) error {
 	}
 	return nil
 }
+
+// UserListItem is a projection of a user account for administrative listing.
+type UserListItem struct {
+	ID        string `json:"id"`
+	Email     string `json:"email"`
+	CreatedAt string `json:"created_at"`
+	IsPrimary bool   `json:"is_primary"`
+}

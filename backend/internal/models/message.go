@@ -24,6 +24,7 @@ type Message struct {
 	TriggerDuration int               `gorm:"not null" json:"trigger_duration"`
 	LastSeen        time.Time         `gorm:"not null;default:CURRENT_TIMESTAMP" json:"last_seen"`
 	Status          MessageStatus     `gorm:"default:'active'" json:"status"`
+	TriggeredAt     *time.Time        `json:"triggered_at,omitempty"`
 	Reminders       []MessageReminder `gorm:"foreignKey:MessageID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"reminders"`
 	CreatedAt       time.Time         `json:"created_at"`
 	UpdatedAt       time.Time         `json:"updated_at"`
@@ -40,4 +41,27 @@ func (m *Message) BeforeCreate(tx *gorm.DB) error {
 		m.ManagementToken = uuid.NewString()
 	}
 	return nil
+}
+
+// BeforeDelete cascades the delete to associated FarewellLetters and their attachments,
+// mirroring the soft/hard mode of the parent operation.
+func (m *Message) BeforeDelete(tx *gorm.DB) error {
+	if m.ID == "" {
+		return nil
+	}
+	db := tx
+	if tx.Statement.Unscoped {
+		db = tx.Unscoped()
+	}
+	var letterIDs []string
+	if err := db.Model(&FarewellLetter{}).Select("id").Where("message_id = ?", m.ID).Find(&letterIDs).Error; err != nil {
+		return err
+	}
+	if len(letterIDs) == 0 {
+		return nil
+	}
+	if err := db.Where("letter_id IN ?", letterIDs).Delete(&FarewellAttachment{}).Error; err != nil {
+		return err
+	}
+	return db.Where("id IN ?", letterIDs).Delete(&FarewellLetter{}).Error
 }

@@ -2,11 +2,10 @@ package handlers
 
 import (
 	"github.com/alpyxn/aeterna/backend/internal/models"
+	"github.com/alpyxn/aeterna/backend/internal/ports"
 	"github.com/alpyxn/aeterna/backend/internal/services"
 	"github.com/gofiber/fiber/v2"
 )
-
-var applicationSettingsService = services.ApplicationSettingsService{}
 
 // settingsResponse embeds tenant settings and adds global registration flags.
 type settingsResponse struct {
@@ -15,27 +14,37 @@ type settingsResponse struct {
 	CanManageRegistration bool `json:"can_manage_registration"`
 }
 
-func GetSettings(c *fiber.Ctx) error {
+// SettingsHandlers groups SMTP settings and application configuration handlers.
+type SettingsHandlers struct {
+	settings    ports.SettingsServicePort
+	appSettings ports.ApplicationSettingsServicePort
+}
+
+func NewSettingsHandlers(settings ports.SettingsServicePort, appSettings ports.ApplicationSettingsServicePort) *SettingsHandlers {
+	return &SettingsHandlers{settings: settings, appSettings: appSettings}
+}
+
+func (h *SettingsHandlers) Get(c *fiber.Ctx) error {
 	userID, err := currentUserID(c)
 	if err != nil {
 		return writeError(c, err)
 	}
-	settings, err := settingsService.Get(userID)
+	settings, err := h.settings.Get(userID)
 	if err != nil {
 		return writeError(c, err)
 	}
-	app, err := applicationSettingsService.Get()
+	app, err := h.appSettings.Get()
 	if err != nil {
 		return writeError(c, err)
 	}
 	return c.JSON(settingsResponse{
 		Settings:              settings,
 		AllowRegistration:     app.AllowRegistration,
-		CanManageRegistration: services.IsFirstUser(userID),
+		CanManageRegistration: h.appSettings.CanManageRegistration(userID),
 	})
 }
 
-func SaveSettings(c *fiber.Ctx) error {
+func (h *SettingsHandlers) Save(c *fiber.Ctx) error {
 	userID, err := currentUserID(c)
 	if err != nil {
 		return writeError(c, err)
@@ -44,18 +53,18 @@ func SaveSettings(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return writeError(c, services.BadRequest("Invalid request body", err))
 	}
-	if req.AllowRegistration != nil && services.IsFirstUser(userID) {
-		if err := applicationSettingsService.SetAllowRegistration(userID, *req.AllowRegistration); err != nil {
+	if req.AllowRegistration != nil {
+		if err := h.appSettings.SetAllowRegistration(userID, *req.AllowRegistration); err != nil {
 			return writeError(c, err)
 		}
 	}
-	if err := settingsService.Save(userID, req.ToSettings()); err != nil {
+	if err := h.settings.Save(userID, req.ToSettings()); err != nil {
 		return writeError(c, err)
 	}
 	return c.JSON(fiber.Map{"success": true})
 }
 
-func TestSMTP(c *fiber.Ctx) error {
+func (h *SettingsHandlers) TestSMTP(c *fiber.Ctx) error {
 	if _, err := currentUserID(c); err != nil {
 		return writeError(c, err)
 	}
@@ -63,7 +72,7 @@ func TestSMTP(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return writeError(c, services.BadRequest("Invalid request body", err))
 	}
-	if err := settingsService.TestSMTP(req.ToSettings()); err != nil {
+	if err := h.settings.TestSMTP(req.ToSettings()); err != nil {
 		return writeError(c, err)
 	}
 	return c.JSON(fiber.Map{"success": true, "message": "Connection successful"})

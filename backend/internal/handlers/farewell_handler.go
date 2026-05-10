@@ -1,0 +1,165 @@
+package handlers
+
+import (
+	"io"
+
+	"github.com/alpyxn/aeterna/backend/internal/ports"
+	"github.com/alpyxn/aeterna/backend/internal/services"
+	"github.com/gofiber/fiber/v2"
+)
+
+// FarewellHandlers groups farewell letter and farewell attachment route handlers.
+type FarewellHandlers struct {
+	farewell ports.FarewellServicePort
+	files    ports.FileServicePort
+}
+
+func NewFarewellHandlers(farewell ports.FarewellServicePort, files ports.FileServicePort) *FarewellHandlers {
+	return &FarewellHandlers{farewell: farewell, files: files}
+}
+
+func (h *FarewellHandlers) List(c *fiber.Ctx) error {
+	userID, err := currentUserID(c)
+	if err != nil {
+		return writeError(c, err)
+	}
+	messageID := c.Params("id")
+
+	letters, err := h.farewell.List(userID, messageID)
+	if err != nil {
+		return writeError(c, err)
+	}
+
+	return c.JSON(letters)
+}
+
+func (h *FarewellHandlers) Create(c *fiber.Ctx) error {
+	userID, err := currentUserID(c)
+	if err != nil {
+		return writeError(c, err)
+	}
+	messageID := c.Params("id")
+
+	var body struct {
+		RecipientEmail string `json:"recipient_email"`
+		Subject        string `json:"subject"`
+		Content        string `json:"content"`
+		DelayMinutes   int    `json:"delay_minutes"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return writeError(c, services.BadRequest("Invalid request body", err))
+	}
+
+	letter, err := h.farewell.Create(userID, messageID, body.RecipientEmail, body.Subject, body.Content, body.DelayMinutes)
+	if err != nil {
+		return writeError(c, err)
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(letter)
+}
+
+func (h *FarewellHandlers) Update(c *fiber.Ctx) error {
+	userID, err := currentUserID(c)
+	if err != nil {
+		return writeError(c, err)
+	}
+	messageID := c.Params("id")
+	letterID := c.Params("letterId")
+
+	var body struct {
+		RecipientEmail string `json:"recipient_email"`
+		Subject        string `json:"subject"`
+		Content        string `json:"content"`
+		DelayMinutes   int    `json:"delay_minutes"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return writeError(c, services.BadRequest("Invalid request body", err))
+	}
+
+	letter, err := h.farewell.Update(userID, messageID, letterID, body.RecipientEmail, body.Subject, body.Content, body.DelayMinutes)
+	if err != nil {
+		return writeError(c, err)
+	}
+
+	return c.JSON(letter)
+}
+
+func (h *FarewellHandlers) Delete(c *fiber.Ctx) error {
+	userID, err := currentUserID(c)
+	if err != nil {
+		return writeError(c, err)
+	}
+	messageID := c.Params("id")
+	letterID := c.Params("letterId")
+
+	if err := h.farewell.Delete(userID, messageID, letterID); err != nil {
+		return writeError(c, err)
+	}
+
+	return c.JSON(fiber.Map{"success": true, "message": "Farewell letter deleted"})
+}
+
+func (h *FarewellHandlers) UploadAttachment(c *fiber.Ctx) error {
+	userID, err := currentUserID(c)
+	if err != nil {
+		return writeError(c, err)
+	}
+	letterID := c.Params("letterId")
+
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		return writeError(c, services.BadRequest("No file provided", err))
+	}
+
+	file, err := fileHeader.Open()
+	if err != nil {
+		return writeError(c, services.BadRequest("Failed to read uploaded file", err))
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return writeError(c, services.BadRequest("Failed to read file data", err))
+	}
+
+	mimeType := fileHeader.Header.Get("Content-Type")
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+
+	attachment, err := h.files.UploadFarewellAttachment(userID, letterID, fileHeader.Filename, mimeType, data)
+	if err != nil {
+		return writeError(c, err)
+	}
+
+	return c.JSON(fiber.Map{"success": true, "attachment": attachment})
+}
+
+func (h *FarewellHandlers) ListAttachments(c *fiber.Ctx) error {
+	userID, err := currentUserID(c)
+	if err != nil {
+		return writeError(c, err)
+	}
+	letterID := c.Params("letterId")
+
+	attachments, err := h.files.ListFarewellAttachmentsByLetterID(userID, letterID)
+	if err != nil {
+		return writeError(c, err)
+	}
+
+	return c.JSON(attachments)
+}
+
+func (h *FarewellHandlers) DeleteAttachment(c *fiber.Ctx) error {
+	userID, err := currentUserID(c)
+	if err != nil {
+		return writeError(c, err)
+	}
+	attachmentID := c.Params("attachmentId")
+
+	if err := h.files.DeleteFarewellAttachment(userID, attachmentID); err != nil {
+		return writeError(c, err)
+	}
+
+	return c.JSON(fiber.Map{"success": true, "message": "Farewell attachment deleted"})
+}
