@@ -16,7 +16,7 @@ import {
     deleteFarewellLetter, uploadFarewellAttachment,
     listFarewellAttachments, deleteFarewellAttachment
 } from "@/lib/api";
-import { ALLOWED_EXTENSIONS, MAX_FILE_SIZE, MAX_FILES, MAX_TOTAL_SIZE, FAREWELL_DELAY_PRESETS } from "@/lib/constants"
+import { ALLOWED_EXTENSIONS, MAX_FILE_SIZE, MAX_FILES, MAX_TOTAL_SIZE, FAREWELL_DELAY_PRESETS, EMAIL_REGEX } from "@/lib/constants"
 import { formatFileSize, formatFarewellDelay } from "@/lib/formatters"
 
 function renderSafeMarkdown(markdown) {
@@ -146,7 +146,7 @@ function AttachmentManager({ messageId, letterId: propLetterId, disabled, pendin
                     <label className="cursor-pointer flex items-center gap-1 text-xs text-teal-400 hover:text-teal-300">
                         <Upload className="w-3 h-3" />
                         {uploading ? "Uploading..." : (letterIdState ? "Add file" : "Queue file")}
-                        <input type="file" className="hidden" onChange={handleUpload} disabled={uploading || attachments.length + pendingFiles.length >= MAX_FILES} />
+                        <input type="file" className="hidden" onChange={handleUpload} disabled={uploading || attachments.length + pendingFiles.length >= MAX_FILES} accept={ALLOWED_EXTENSIONS.join(',')} />
                     </label>
                 )}
             </div>
@@ -207,6 +207,20 @@ function LetterForm({ messageId, letter, onSave, onCancel }) {
 
     async function handleSave() {
         setError(null);
+
+        if (!recipientEmail.trim() || !EMAIL_REGEX.test(recipientEmail.trim())) {
+            setError('Please enter a valid recipient email address.');
+            return;
+        }
+        if (!subject.trim()) {
+            setError('Subject is required.');
+            return;
+        }
+        if (!content.trim()) {
+            setError('Message content is required.');
+            return;
+        }
+
         setSaving(true);
         try {
             const isNewLetter = !savedLetterId;
@@ -218,14 +232,9 @@ function LetterForm({ messageId, letter, onSave, onCancel }) {
                 saved = await createFarewellLetter(messageId, payload);
             }
 
-            if (pendingFiles.length > 0) {
-                const remainingFiles = [...pendingFiles];
-                while (remainingFiles.length > 0) {
-                    const nextFile = remainingFiles[0];
-                    await uploadFarewellAttachment(messageId, saved.id, nextFile);
-                    remainingFiles.shift();
-                }
-                setPendingFiles(remainingFiles);
+            for (const file of pendingFiles) {
+                await uploadFarewellAttachment(messageId, saved.id, file);
+                setPendingFiles(prev => prev.filter(f => f !== file));
             }
 
             setSavedLetterId(saved.id);
