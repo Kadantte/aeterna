@@ -45,23 +45,31 @@ func (m *Message) BeforeCreate(tx *gorm.DB) error {
 
 // BeforeDelete cascades the delete to associated FarewellLetters and their attachments,
 // mirroring the soft/hard mode of the parent operation.
+//
+// Each query opens a fresh session so chain conditions (Where, Select, Model) don't
+// leak between operations on the same underlying gorm.DB.
 func (m *Message) BeforeDelete(tx *gorm.DB) error {
 	if m.ID == "" {
 		return nil
 	}
-	db := tx
-	if tx.Statement.Unscoped {
-		db = tx.Unscoped()
+	unscoped := tx.Statement.Unscoped
+	newSession := func() *gorm.DB {
+		s := tx.Session(&gorm.Session{NewDB: true})
+		if unscoped {
+			s = s.Unscoped()
+		}
+		return s
 	}
+
 	var letterIDs []string
-	if err := db.Model(&FarewellLetter{}).Select("id").Where("message_id = ?", m.ID).Find(&letterIDs).Error; err != nil {
+	if err := newSession().Model(&FarewellLetter{}).Select("id").Where("message_id = ?", m.ID).Find(&letterIDs).Error; err != nil {
 		return err
 	}
 	if len(letterIDs) == 0 {
 		return nil
 	}
-	if err := db.Where("letter_id IN ?", letterIDs).Delete(&FarewellAttachment{}).Error; err != nil {
+	if err := newSession().Where("letter_id IN ?", letterIDs).Delete(&FarewellAttachment{}).Error; err != nil {
 		return err
 	}
-	return db.Where("id IN ?", letterIDs).Delete(&FarewellLetter{}).Error
+	return newSession().Where("id IN ?", letterIDs).Delete(&FarewellLetter{}).Error
 }

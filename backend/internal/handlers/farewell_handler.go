@@ -14,6 +14,24 @@ type FarewellHandlers struct {
 	files    ports.FileServicePort
 }
 
+type farewellPayload struct {
+	RecipientEmail string `json:"recipient_email"`
+	Subject        string `json:"subject"`
+	Content        string `json:"content"`
+	DelayMinutes   *int   `json:"delay_minutes"`
+}
+
+func parseFarewellPayload(c *fiber.Ctx) (farewellPayload, error) {
+	var body farewellPayload
+	if err := c.BodyParser(&body); err != nil {
+		return farewellPayload{}, services.BadRequest("Invalid request body", err)
+	}
+	if body.DelayMinutes == nil {
+		return farewellPayload{}, services.BadRequest("delay_minutes is required and must be a number", nil)
+	}
+	return body, nil
+}
+
 func NewFarewellHandlers(farewell ports.FarewellServicePort, files ports.FileServicePort) *FarewellHandlers {
 	return &FarewellHandlers{farewell: farewell, files: files}
 }
@@ -40,17 +58,19 @@ func (h *FarewellHandlers) Create(c *fiber.Ctx) error {
 	}
 	messageID := c.Params("id")
 
-	var body struct {
-		RecipientEmail string `json:"recipient_email"`
-		Subject        string `json:"subject"`
-		Content        string `json:"content"`
-		DelayMinutes   int    `json:"delay_minutes"`
-	}
-	if err := c.BodyParser(&body); err != nil {
-		return writeError(c, services.BadRequest("Invalid request body", err))
+	body, err := parseFarewellPayload(c)
+	if err != nil {
+		return writeError(c, err)
 	}
 
-	letter, err := h.farewell.Create(userID, messageID, body.RecipientEmail, body.Subject, body.Content, body.DelayMinutes)
+	letter, err := h.farewell.Create(
+		userID,
+		messageID,
+		body.RecipientEmail,
+		body.Subject,
+		body.Content,
+		*body.DelayMinutes,
+	)
 	if err != nil {
 		return writeError(c, err)
 	}
@@ -66,17 +86,20 @@ func (h *FarewellHandlers) Update(c *fiber.Ctx) error {
 	messageID := c.Params("id")
 	letterID := c.Params("letterId")
 
-	var body struct {
-		RecipientEmail string `json:"recipient_email"`
-		Subject        string `json:"subject"`
-		Content        string `json:"content"`
-		DelayMinutes   int    `json:"delay_minutes"`
-	}
-	if err := c.BodyParser(&body); err != nil {
-		return writeError(c, services.BadRequest("Invalid request body", err))
+	body, err := parseFarewellPayload(c)
+	if err != nil {
+		return writeError(c, err)
 	}
 
-	letter, err := h.farewell.Update(userID, messageID, letterID, body.RecipientEmail, body.Subject, body.Content, body.DelayMinutes)
+	letter, err := h.farewell.Update(
+		userID,
+		messageID,
+		letterID,
+		body.RecipientEmail,
+		body.Subject,
+		body.Content,
+		*body.DelayMinutes,
+	)
 	if err != nil {
 		return writeError(c, err)
 	}

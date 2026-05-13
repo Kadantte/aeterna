@@ -43,12 +43,15 @@ function Button({
   variant = "default",
   size = "default",
   asChild = false,
+  type,
   ...props
 }) {
   const Comp = asChild ? Slot.Root : "button"
+  const resolvedType = asChild ? undefined : (type || "button")
 
   return (
     <Comp
+      type={resolvedType}
       data-slot="button"
       data-variant={variant}
       data-size={size}

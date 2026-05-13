@@ -145,7 +145,7 @@ export default function VaultLock({ onUnlock }) {
                 if (res?.recovery_key) {
                     setShowRecoveryKey(res.recovery_key);
                 } else {
-                    onUnlock();
+                    onUnlock('dashboard');
                 }
             } else if (configured === true && isRegisterMode) {
                 if (!passwordStrength.isValid) {
@@ -175,7 +175,7 @@ export default function VaultLock({ onUnlock }) {
                 if (res?.recovery_key) {
                     setShowRecoveryKey(res.recovery_key);
                 } else {
-                    onUnlock();
+                    onUnlock('home');
                 }
             } else if (configured === false) {
                 if (!passwordStrength.isValid) {
@@ -205,7 +205,7 @@ export default function VaultLock({ onUnlock }) {
                 if (res?.recovery_key) {
                     setShowRecoveryKey(res.recovery_key);
                 } else {
-                    onUnlock();
+                    onUnlock('home');
                 }
             } else {
                 if (!email.trim()) {
@@ -217,7 +217,7 @@ export default function VaultLock({ onUnlock }) {
                     method: 'POST',
                     body: JSON.stringify({ email: email.trim(), password })
                 });
-                onUnlock();
+                onUnlock('dashboard');
             }
         } catch (e) {
             const errorMessage = e.message || '';

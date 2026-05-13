@@ -113,8 +113,12 @@ button:focus-visible {
   @apply bg-dark-600;
 }
 
-/* Smooth transitions */
-* {
+/* Smooth transitions on interactive controls only */
+a,
+button,
+input,
+select,
+textarea {
   transition-property: background-color, border-color, color, opacity;
   transition-duration: 150ms;
   transition-timing-function: ease;

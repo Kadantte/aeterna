@@ -21,7 +21,7 @@ type FarewellLetter struct {
 	RecipientEmail  string               `gorm:"not null" json:"recipient_email"`
 	Subject         string               `gorm:"not null" json:"subject"`
 	Content         string               `gorm:"column:encrypted_content;not null" json:"content"`
-	DelayMinutes    int                  `gorm:"not null;default:1440" json:"delay_minutes"`
+	DelayMinutes    int                  `gorm:"not null" json:"delay_minutes"`
 	Status          FarewellLetterStatus `gorm:"default:'pending'" json:"status"`
 	SentAt          *time.Time           `json:"sent_at,omitempty"`
 	AttachmentCount int64                `gorm:"-" json:"attachment_count"`
@@ -40,13 +40,16 @@ func (f *FarewellLetter) BeforeCreate(tx *gorm.DB) error {
 // BeforeDelete cascades the delete to associated FarewellAttachments,
 // mirroring the soft/hard mode of the parent operation.
 // When called from a batch context (f.ID == ""), the parent Message.BeforeDelete handles it.
+//
+// Uses a fresh session so the parent statement's Where/Select clauses don't leak
+// into the cascade query.
 func (f *FarewellLetter) BeforeDelete(tx *gorm.DB) error {
 	if f.ID == "" {
 		return nil
 	}
-	db := tx
+	sess := tx.Session(&gorm.Session{NewDB: true})
 	if tx.Statement.Unscoped {
-		db = tx.Unscoped()
+		sess = sess.Unscoped()
 	}
-	return db.Where("letter_id = ?", f.ID).Delete(&FarewellAttachment{}).Error
+	return sess.Where("letter_id = ?", f.ID).Delete(&FarewellAttachment{}).Error
 }

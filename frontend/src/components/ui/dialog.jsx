@@ -29,7 +29,7 @@ const DialogTrigger = ({ asChild, children }) => {
         })
     }
 
-    return <button onClick={() => setOpen(true)}>{children}</button>
+    return <button type="button" onClick={() => setOpen(true)}>{children}</button>
 }
 
 const DialogContent = ({ children, className = "", contentClassName = "" }) => {
