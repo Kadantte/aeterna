@@ -6,13 +6,20 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/alpyxn/aeterna/backend/internal/config"
 	"github.com/alpyxn/aeterna/backend/internal/database"
 	"github.com/alpyxn/aeterna/backend/internal/models"
 	"gorm.io/gorm"
 )
 
 // UserAdminService manages accounts for the primary administrator only.
-type UserAdminService struct{}
+type UserAdminService struct {
+	cfg config.Config
+}
+
+func NewUserAdminService(cfg config.Config) UserAdminService {
+	return UserAdminService{cfg: cfg}
+}
 
 // List returns all accounts when the actor is the primary (first) user.
 func (s UserAdminService) List(actorUserID string) ([]models.UserListItem, error) {
@@ -118,10 +125,6 @@ func (s UserAdminService) Delete(actorUserID, targetUserID string) error {
 		return err
 	}
 
-	removeUserUploadsDir(targetUserID)
+	_ = os.RemoveAll(filepath.Join(GetUploadsDir(s.cfg.Database.Path), targetUserID))
 	return nil
-}
-
-func removeUserUploadsDir(userID string) {
-	_ = os.RemoveAll(filepath.Join(GetUploadsDir(), userID))
 }

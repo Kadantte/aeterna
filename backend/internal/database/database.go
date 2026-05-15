@@ -5,20 +5,18 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/alpyxn/aeterna/backend/internal/config"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
 var DB *gorm.DB
 
-func Connect() {
-	dbPath := os.Getenv("DATABASE_PATH")
-	if dbPath == "" {
-		dbPath = "./data/aeterna.db"
-	}
+func Connect(cfg config.Config) {
+	dbPath := cfg.Database.Path
 
 	// Warn if PostgreSQL environment variables are set (Aeterna uses SQLite only)
-	if os.Getenv("DB_HOST") != "" || os.Getenv("POSTGRES_HOST") != "" || os.Getenv("DATABASE_URL") != "" {
+	if cfg.Database.DBHost != "" || cfg.Database.PostgresHost != "" || cfg.Database.DatabaseURL != "" {
 		log.Println("WARNING: PostgreSQL environment variables detected, but Aeterna uses SQLite only.")
 		log.Println("Ignoring PostgreSQL configuration and using SQLite at:", dbPath)
 	}

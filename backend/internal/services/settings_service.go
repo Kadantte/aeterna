@@ -6,12 +6,19 @@ import (
 	"net/smtp"
 	"strings"
 
+	"github.com/alpyxn/aeterna/backend/internal/config"
 	"github.com/alpyxn/aeterna/backend/internal/database"
 	"github.com/alpyxn/aeterna/backend/internal/models"
 	"gorm.io/gorm"
 )
 
-type SettingsService struct{}
+type SettingsService struct {
+	cfg config.Config
+}
+
+func NewSettingsService(cfg config.Config) SettingsService {
+	return SettingsService{cfg: cfg}
+}
 
 func (s SettingsService) Get(userID string) (models.Settings, error) {
 	var settings models.Settings
@@ -58,7 +65,7 @@ func (s SettingsService) Save(userID string, req models.Settings) error {
 		return BadRequest("Webhook URL is required", nil)
 	}
 	if req.WebhookURL != "" {
-		validatedURL, err := validateWebhookURL(req.WebhookURL)
+		validatedURL, err := validateWebhookURL(req.WebhookURL, s.cfg.Webhook.AllowlistHosts)
 		if err != nil {
 			return err
 		}

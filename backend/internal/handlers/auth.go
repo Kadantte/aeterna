@@ -1,9 +1,9 @@
 package handlers
 
 import (
-	"os"
 	"time"
 
+	"github.com/alpyxn/aeterna/backend/internal/config"
 	"github.com/alpyxn/aeterna/backend/internal/middleware"
 	"github.com/alpyxn/aeterna/backend/internal/ports"
 	"github.com/alpyxn/aeterna/backend/internal/services"
@@ -24,10 +24,11 @@ type loginRequest struct {
 // AuthHandlers groups all authentication-related route handlers.
 type AuthHandlers struct {
 	auth ports.AuthServicePort
+	cfg  config.Config
 }
 
-func NewAuthHandlers(auth ports.AuthServicePort) *AuthHandlers {
-	return &AuthHandlers{auth: auth}
+func NewAuthHandlers(auth ports.AuthServicePort, cfg config.Config) *AuthHandlers {
+	return &AuthHandlers{auth: auth, cfg: cfg}
 }
 
 func (h *AuthHandlers) SetupStatus(c *fiber.Ctx) error {
@@ -183,7 +184,7 @@ func (h *AuthHandlers) SessionStatus(c *fiber.Ctx) error {
 }
 
 func (h *AuthHandlers) Logout(c *fiber.Ctx) error {
-	clearSessionCookie(c)
+	h.clearSessionCookie(c)
 	return c.JSON(fiber.Map{"success": true})
 }
 
@@ -192,8 +193,7 @@ func (h *AuthHandlers) issueSessionCookie(c *fiber.Ctx, userID string) error {
 	if err != nil {
 		return err
 	}
-	isHTTPS := c.Protocol() == "https" || c.Get("X-Forwarded-Proto") == "https"
-	secure := os.Getenv("ENV") == "production" && isHTTPS
+	secure := middleware.ShouldUseSecureCookie(c, h.cfg.Auth.CookieSecureMode)
 	c.Cookie(&fiber.Cookie{
 		Name:     "aeterna_session",
 		Value:    token,
@@ -206,9 +206,8 @@ func (h *AuthHandlers) issueSessionCookie(c *fiber.Ctx, userID string) error {
 	return nil
 }
 
-func clearSessionCookie(c *fiber.Ctx) {
-	isHTTPS := c.Protocol() == "https" || c.Get("X-Forwarded-Proto") == "https"
-	secure := os.Getenv("ENV") == "production" && isHTTPS
+func (h *AuthHandlers) clearSessionCookie(c *fiber.Ctx) {
+	secure := middleware.ShouldUseSecureCookie(c, h.cfg.Auth.CookieSecureMode)
 	c.Cookie(&fiber.Cookie{
 		Name:     "aeterna_session",
 		Value:    "",

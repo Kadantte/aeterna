@@ -3,9 +3,9 @@ package main
 import (
 	"flag"
 	"log"
-	"os"
 	"time"
 
+	"github.com/alpyxn/aeterna/backend/internal/config"
 	"github.com/alpyxn/aeterna/backend/internal/database"
 	"github.com/alpyxn/aeterna/backend/internal/handlers"
 	"github.com/alpyxn/aeterna/backend/internal/logging"
@@ -24,8 +24,9 @@ import (
 func main() {
 	encryptionKeyFile := flag.String("encryption-key-file", "", "Path to file containing encryption key (fallback, must have 0600 permissions)")
 	flag.Parse()
+	cfg := config.Load()
 
-	logging.Init()
+	logging.Init(cfg)
 
 	services.InitKeyManager(*encryptionKeyFile)
 
@@ -39,19 +40,8 @@ func main() {
 			"\n"+
 			"For more information, see: https://github.com/alpyxn/aeterna/blob/main/README.md", err)
 	}
-	if os.Getenv("ENV") == "production" {
-		if os.Getenv("DATABASE_PATH") == "" {
-			log.Fatal("DATABASE_PATH must be set in production")
-		}
-		if os.Getenv("ALLOWED_ORIGINS") == "" {
-			log.Fatal("ALLOWED_ORIGINS must be set in production")
-		}
-		if os.Getenv("ALLOWED_ORIGINS") == "*" && os.Getenv("PROXY_MODE") != "simple" {
-			log.Fatal("ALLOWED_ORIGINS cannot be '*' in production (unless using simple mode)")
-		}
-	}
 
-	database.Connect()
+	database.Connect(cfg)
 
 	if err := database.DB.AutoMigrate(
 		&models.User{},
@@ -67,7 +57,7 @@ func main() {
 		log.Fatal("Failed to migrate database: ", err)
 	}
 
-	if err := database.MigrateLegacyToMultitenant(database.DB); err != nil {
+	if err := database.MigrateLegacyToMultitenant(database.DB, cfg); err != nil {
 		log.Fatal("Failed to migrate to multi-tenant schema: ", err)
 	}
 
@@ -87,22 +77,24 @@ func main() {
 	database.DB.Exec("UPDATE messages SET encrypted_content = '' WHERE encrypted_content IS NULL;")
 	database.DB.Exec("UPDATE settings SET webhook_enabled = 0 WHERE webhook_enabled IS NULL;")
 
-	if err := services.EnsureUploadsDir(); err != nil {
+	if err := services.EnsureUploadsDir(cfg.Database.Path); err != nil {
 		log.Fatal("Failed to create uploads directory: ", err)
 	}
 
+	handlers.SetIsProduction(cfg)
+
 	// --- Composition root: wire services ---
-	authSvc := services.AuthService{}
+	authSvc := services.NewAuthService(cfg)
 	messageSvc := services.MessageService{}
-	fileSvc := services.FileService{}
+	fileSvc := services.NewFileService(cfg)
 	farewellSvc := services.FarewellService{}
-	settingsSvc := services.SettingsService{}
+	settingsSvc := services.NewSettingsService(cfg)
 	appSettingsSvc := services.ApplicationSettingsService{}
-	webhookStore := services.WebhookStore{}
-	userAdminSvc := services.UserAdminService{}
+	webhookStore := services.NewWebhookStore(cfg)
+	userAdminSvc := services.NewUserAdminService(cfg)
 
 	// --- Wire handlers ---
-	authH := handlers.NewAuthHandlers(authSvc)
+	authH := handlers.NewAuthHandlers(authSvc, cfg)
 	messageH := handlers.NewMessageHandlers(messageSvc)
 	heartbeatH := handlers.NewHeartbeatHandlers(messageSvc, settingsSvc)
 	attachH := handlers.NewAttachmentHandlers(fileSvc)
@@ -112,7 +104,7 @@ func main() {
 	usersH := handlers.NewUserHandlers(userAdminSvc)
 
 	// --- Wire worker ---
-	w := worker.New(settingsSvc, webhookStore, fileSvc)
+	w := worker.New(settingsSvc, webhookStore, fileSvc, cfg)
 
 	app := fiber.New(fiber.Config{
 		BodyLimit: 25 * 1024 * 1024,
@@ -122,12 +114,9 @@ func main() {
 	app.Use(logger.New(logger.Config{
 		Format: "{\"time\":\"${time}\",\"ip\":\"${ip}\",\"status\":${status},\"method\":\"${method}\",\"path\":\"${path}\",\"latency\":\"${latency}\",\"req_id\":\"${locals:requestid}\"}\n",
 	}))
-	app.Use(middleware.SecurityHeaders)
+	app.Use(middleware.SecurityHeaders(cfg))
 
-	allowedOrigins := os.Getenv("ALLOWED_ORIGINS")
-	if allowedOrigins == "" {
-		allowedOrigins = "http://localhost:5173"
-	}
+	allowedOrigins := cfg.AllowedOriginsOrDefault()
 
 	if allowedOrigins == "*" {
 		app.Use(cors.New(cors.Config{
@@ -175,7 +164,7 @@ func main() {
 	api.Post("/quick-heartbeat/:token", heartbeatH.QuickHeartbeat)
 
 	// Protected routes
-	mgmt := api.Group("/", middleware.MasterAuth)
+	mgmt := api.Group("/", middleware.MasterAuth(authSvc, cfg))
 	mgmt.Post("/messages", messageH.Create)
 	mgmt.Get("/messages", messageH.List)
 	mgmt.Delete("/messages/:id", messageH.Delete)

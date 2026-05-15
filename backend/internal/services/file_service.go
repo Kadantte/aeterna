@@ -7,30 +7,36 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/alpyxn/aeterna/backend/internal/config"
 	"github.com/alpyxn/aeterna/backend/internal/database"
 	"github.com/alpyxn/aeterna/backend/internal/models"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
-type FileService struct{}
+type FileService struct {
+	cfg config.Config
+}
+
+func NewFileService(cfg config.Config) FileService {
+	return FileService{cfg: cfg}
+}
 
 var fileCryptoService = CryptoService{}
 var fileValidationService = ValidationService{}
 
-// GetUploadsDir returns the base directory for file uploads
-func GetUploadsDir() string {
-	dbPath := os.Getenv("DATABASE_PATH")
-	if dbPath != "" {
-		return filepath.Join(filepath.Dir(dbPath), "uploads")
-	}
-	return filepath.Join(".", "data", "uploads")
+func (s FileService) uploadsDir() string {
+	return filepath.Join(filepath.Dir(s.cfg.Database.Path), "uploads")
 }
 
-// EnsureUploadsDir creates the uploads directory if it does not exist
-func EnsureUploadsDir() error {
-	dir := GetUploadsDir()
-	return os.MkdirAll(dir, 0700)
+// GetUploadsDir returns the base directory for file uploads given a database path.
+func GetUploadsDir(dbPath string) string {
+	return filepath.Join(filepath.Dir(dbPath), "uploads")
+}
+
+// EnsureUploadsDir creates the uploads directory if it does not exist.
+func EnsureUploadsDir(dbPath string) error {
+	return os.MkdirAll(GetUploadsDir(dbPath), 0700)
 }
 
 // Upload validates, encrypts, and stores a file on disk, then creates a DB record
@@ -70,7 +76,7 @@ func (s FileService) Upload(userID, messageID, filename, mimeType string, data [
 		return models.Attachment{}, Internal("Failed to encrypt file", err)
 	}
 
-	userDir := filepath.Join(GetUploadsDir(), userID)
+	userDir := filepath.Join(s.uploadsDir(), userID)
 	msgDir := filepath.Join(userDir, messageID)
 	if err := os.MkdirAll(msgDir, 0700); err != nil {
 		return models.Attachment{}, Internal("Failed to create upload directory", err)
@@ -140,7 +146,7 @@ func (s FileService) DeleteByMessageID(userID, messageID string) error {
 		return Internal("Failed to delete attachment records", err)
 	}
 
-	msgDir := filepath.Join(GetUploadsDir(), userID, messageID)
+	msgDir := filepath.Join(s.uploadsDir(), userID, messageID)
 	os.Remove(msgDir)
 
 	slog.Info("All attachments deleted for message", "message_id", messageID)
@@ -224,7 +230,7 @@ func (s FileService) UploadFarewellAttachment(userID, letterID, filename, mimeTy
 		return models.FarewellAttachment{}, Internal("Failed to encrypt file", err)
 	}
 
-	letterDir := filepath.Join(GetUploadsDir(), userID, "farewell", letterID)
+	letterDir := filepath.Join(s.uploadsDir(), userID, "farewell", letterID)
 	if err := os.MkdirAll(letterDir, 0700); err != nil {
 		return models.FarewellAttachment{}, Internal("Failed to create upload directory", err)
 	}
@@ -311,7 +317,7 @@ func (s FileService) DeleteFarewellAttachmentsByLetterID(userID, letterID string
 		return Internal("Failed to delete farewell attachment records", err)
 	}
 
-	letterDir := filepath.Join(GetUploadsDir(), userID, "farewell", letterID)
+	letterDir := filepath.Join(s.uploadsDir(), userID, "farewell", letterID)
 	os.Remove(letterDir)
 
 	slog.Info("All farewell attachments deleted", "letter_id", letterID)
