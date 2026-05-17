@@ -3,25 +3,24 @@ package logging
 import (
 	"log/slog"
 	"os"
-	"strconv"
 	"strings"
 
+	"github.com/alpyxn/aeterna/backend/internal/config"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
-func Init() *slog.Logger {
-	level := parseLevel(os.Getenv("LOG_LEVEL"))
-	format := strings.ToLower(os.Getenv("LOG_FORMAT"))
+func Init(cfg config.Config) *slog.Logger {
+	level := parseLevel(cfg.Logging.Level)
+	format := strings.ToLower(cfg.Logging.Format)
 
 	var output *lumberjack.Logger
-	logFile := os.Getenv("LOG_FILE")
-	if logFile != "" {
+	if cfg.Logging.File != "" {
 		output = &lumberjack.Logger{
-			Filename:   logFile,
-			MaxSize:    getEnvInt("LOG_MAX_SIZE", 50),
-			MaxBackups: getEnvInt("LOG_MAX_BACKUPS", 5),
-			MaxAge:     getEnvInt("LOG_MAX_AGE", 14),
-			Compress:   getEnvBool("LOG_COMPRESS", true),
+			Filename:   cfg.Logging.File,
+			MaxSize:    cfg.Logging.MaxSize,
+			MaxBackups: cfg.Logging.MaxBackups,
+			MaxAge:     cfg.Logging.MaxAge,
+			Compress:   cfg.Logging.Compress,
 		}
 	}
 
@@ -60,28 +59,4 @@ func parseLevel(value string) slog.Level {
 	default:
 		return slog.LevelInfo
 	}
-}
-
-func getEnvInt(key string, fallback int) int {
-	val := os.Getenv(key)
-	if val == "" {
-		return fallback
-	}
-	parsed, err := strconv.Atoi(val)
-	if err != nil {
-		return fallback
-	}
-	return parsed
-}
-
-func getEnvBool(key string, fallback bool) bool {
-	val := os.Getenv(key)
-	if val == "" {
-		return fallback
-	}
-	parsed, err := strconv.ParseBool(val)
-	if err != nil {
-		return fallback
-	}
-	return parsed
 }

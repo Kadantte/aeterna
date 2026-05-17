@@ -3,39 +3,43 @@ package middleware
 import (
 	"log/slog"
 	"net/url"
-	"os"
 	"strings"
+	"time"
 
-	"github.com/alpyxn/aeterna/backend/internal/services"
+	"github.com/alpyxn/aeterna/backend/internal/config"
+	"github.com/alpyxn/aeterna/backend/internal/ports"
 	"github.com/gofiber/fiber/v2"
 )
 
-var authService = services.AuthService{}
-
-func MasterAuth(c *fiber.Ctx) error {
-	if token := c.Cookies("aeterna_session"); token != "" {
-		userID, err := authService.VerifySessionToken(token)
-		if err == nil {
-			if err := enforceOriginAllowlist(c); err != nil {
-				return err
+// MasterAuth returns a middleware that validates the session cookie and enforces the origin allowlist.
+func MasterAuth(auth ports.AuthServicePort, cfg config.Config) fiber.Handler {
+	allowedOrigins := cfg.AllowedOriginsOrDefault()
+	isProd := cfg.IsProduction()
+	cookieSecureMode := cfg.Auth.CookieSecureMode
+	return func(c *fiber.Ctx) error {
+		if token := c.Cookies("aeterna_session"); token != "" {
+			userID, err := auth.VerifySessionToken(token)
+			if err == nil {
+				if err := enforceOriginAllowlist(c, allowedOrigins, isProd); err != nil {
+					return err
+				}
+				c.Locals("user_id", userID)
+				return c.Next()
 			}
-			c.Locals("user_id", userID)
-			return c.Next()
+			clearSessionCookieWith(c, cookieSecureMode)
 		}
-		c.ClearCookie("aeterna_session")
-	}
 
-	return c.Status(401).JSON(fiber.Map{
-		"error": "Unauthorized access. Session required.",
-		"code":  "unauthorized",
-	})
+		return c.Status(401).JSON(fiber.Map{
+			"error": "Unauthorized access. Session required.",
+			"code":  "unauthorized",
+		})
+	}
 }
 
-func enforceOriginAllowlist(c *fiber.Ctx) error {
+func enforceOriginAllowlist(c *fiber.Ctx, allowedOrigins string, isProd bool) error {
 	origin := strings.TrimSpace(c.Get("Origin"))
-	allowedOrigins := strings.TrimSpace(os.Getenv("ALLOWED_ORIGINS"))
 
-	if os.Getenv("ENV") != "production" {
+	if !isProd {
 		slog.Info("Origin check", "origin", origin, "allowed", allowedOrigins, "referer", c.Get("Referer"))
 	}
 
@@ -54,8 +58,7 @@ func enforceOriginAllowlist(c *fiber.Ctx) error {
 	}
 
 	if origin == "" {
-		env := os.Getenv("ENV")
-		if env != "production" {
+		if !isProd {
 			return nil
 		}
 		return c.Status(403).JSON(fiber.Map{
@@ -90,4 +93,41 @@ func enforceOriginAllowlist(c *fiber.Ctx) error {
 		"error": "Origin not allowed",
 		"code":  "origin_not_allowed",
 	})
+}
+
+func clearSessionCookieWith(c *fiber.Ctx, cookieSecureMode string) {
+	secure := ShouldUseSecureCookie(c, cookieSecureMode)
+	c.Cookie(&fiber.Cookie{
+		Name:     "aeterna_session",
+		Value:    "",
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+		Path:     "/",
+		HTTPOnly: true,
+		Secure:   secure,
+		SameSite: fiber.CookieSameSiteStrictMode,
+	})
+}
+
+// ShouldUseSecureCookie returns true when the session cookie should be flagged Secure.
+func ShouldUseSecureCookie(c *fiber.Ctx, cookieSecureMode string) bool {
+	switch cookieSecureMode {
+	case "always":
+		return true
+	case "never":
+		return false
+	}
+	return requestIsHTTPS(c)
+}
+
+func requestIsHTTPS(c *fiber.Ctx) bool {
+	if c.Protocol() == "https" {
+		return true
+	}
+	forwardedProto := strings.ToLower(strings.TrimSpace(c.Get("X-Forwarded-Proto")))
+	if forwardedProto == "" {
+		return false
+	}
+	first := strings.TrimSpace(strings.Split(forwardedProto, ",")[0])
+	return first == "https"
 }

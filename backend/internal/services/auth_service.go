@@ -7,18 +7,23 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/alpyxn/aeterna/backend/internal/config"
 	"github.com/alpyxn/aeterna/backend/internal/database"
 	"github.com/alpyxn/aeterna/backend/internal/models"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
 
-type AuthService struct{}
+type AuthService struct {
+	cfg config.Config
+}
+
+func NewAuthService(cfg config.Config) AuthService {
+	return AuthService{cfg: cfg}
+}
 
 type sessionClaims struct {
 	Exp    int64  `json:"exp"`
@@ -48,7 +53,7 @@ func (s AuthService) IssueSessionToken(userID string) (string, time.Time, error)
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	ttl := sessionTTL()
+	ttl := s.sessionTTL()
 	now := time.Now().UTC()
 	exp := now.Add(ttl)
 
@@ -108,16 +113,8 @@ func (s AuthService) VerifySessionToken(token string) (userID string, err error)
 	return claims.UserID, nil
 }
 
-func sessionTTL() time.Duration {
-	raw := os.Getenv("AUTH_SESSION_TTL_HOURS")
-	if raw == "" {
-		return 12 * time.Hour
-	}
-	hours, err := strconv.Atoi(raw)
-	if err != nil || hours <= 0 {
-		return 12 * time.Hour
-	}
-	return time.Duration(hours) * time.Hour
+func (s AuthService) sessionTTL() time.Duration {
+	return time.Duration(s.cfg.Auth.SessionTTLHours) * time.Hour
 }
 
 // IsConfigured returns true when at least one user account exists.
@@ -208,7 +205,7 @@ var applicationSettingsService = ApplicationSettingsService{}
 
 // AdditionalRegistrationOpen reports whether self-service registration is allowed when an account already exists (env or DB flag).
 func (s AuthService) AdditionalRegistrationOpen() (bool, error) {
-	if os.Getenv("ALLOW_REGISTRATION") == "true" {
+	if s.cfg.Auth.AllowRegistration {
 		return true, nil
 	}
 	app, err := applicationSettingsService.Get()
@@ -314,7 +311,7 @@ func (s AuthService) Login(email, password string) (models.User, error) {
 		return models.User{}, BadRequest("Email and password are required", nil)
 	}
 
-	if envPassword := os.Getenv("MASTER_PASSWORD"); envPassword != "" {
+	if envPassword := s.cfg.Auth.MasterPassword; envPassword != "" {
 		var n int64
 		database.DB.Model(&models.User{}).Count(&n)
 		if n == 1 {

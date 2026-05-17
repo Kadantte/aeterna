@@ -7,23 +7,22 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/alpyxn/aeterna/backend/internal/config"
 	"github.com/alpyxn/aeterna/backend/internal/models"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
 
-func uploadsBaseDir() string {
-	dbPath := os.Getenv("DATABASE_PATH")
-	if dbPath != "" {
-		return filepath.Join(filepath.Dir(dbPath), "uploads")
-	}
-	return filepath.Join(".", "data", "uploads")
+func uploadsBaseDir(dbPath string) string {
+	return filepath.Join(filepath.Dir(dbPath), "uploads")
 }
 
 // MigrateLegacyToMultitenant assigns a single legacy user to existing rows when upgrading
 // from single-tenant installs. Safe to call on every startup (idempotent).
-func MigrateLegacyToMultitenant(db *gorm.DB) error {
+func MigrateLegacyToMultitenant(db *gorm.DB, cfg config.Config) error {
+	dbPath := cfg.Database.Path
+	masterPassword := cfg.Auth.MasterPassword
 	var userCount int64
 	if err := db.Model(&models.User{}).Count(&userCount).Error; err != nil {
 		return err
@@ -52,7 +51,7 @@ func MigrateLegacyToMultitenant(db *gorm.DB) error {
 
 	pwdHash := settings.MasterPasswordHash
 	if pwdHash == "" {
-		if env := os.Getenv("MASTER_PASSWORD"); env != "" {
+		if env := masterPassword; env != "" {
 			h, err := bcrypt.GenerateFromPassword([]byte(env), bcrypt.DefaultCost)
 			if err != nil {
 				return err
@@ -90,7 +89,7 @@ func MigrateLegacyToMultitenant(db *gorm.DB) error {
 		return err
 	}
 
-	if err := migrateLegacyUploadPaths(db, uid); err != nil {
+	if err := migrateLegacyUploadPaths(db, uid, dbPath); err != nil {
 		log.Println("Warning: legacy upload path migration:", err)
 	}
 
@@ -114,8 +113,8 @@ func backfillOrphanUserIDs(db *gorm.DB) error {
 	return db.Model(&models.Attachment{}).Where(q).Update("user_id", uid).Error
 }
 
-func migrateLegacyUploadPaths(db *gorm.DB, legacyUserID string) error {
-	base := uploadsBaseDir()
+func migrateLegacyUploadPaths(db *gorm.DB, legacyUserID, dbPath string) error {
+	base := uploadsBaseDir(dbPath)
 	entries, err := os.ReadDir(base)
 	if err != nil {
 		if os.IsNotExist(err) {

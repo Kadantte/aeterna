@@ -2,11 +2,17 @@ package handlers
 
 import (
 	"errors"
-	"os"
 
+	"github.com/alpyxn/aeterna/backend/internal/config"
 	"github.com/alpyxn/aeterna/backend/internal/services"
 	"github.com/gofiber/fiber/v2"
 )
+
+var isProduction bool
+
+// SetIsProduction configures whether the handler package runs in production mode.
+// Call once from main before registering routes.
+func SetIsProduction(cfg config.Config) { isProduction = cfg.IsProduction() }
 
 func currentUserID(c *fiber.Ctx) (string, error) {
 	uid, ok := c.Locals("user_id").(string)
@@ -17,6 +23,7 @@ func currentUserID(c *fiber.Ctx) (string, error) {
 }
 
 func writeError(c *fiber.Ctx, err error) error {
+	isProd := isProduction
 	var apiErr *services.APIError
 	if errors.As(err, &apiErr) {
 		code := apiErr.Code
@@ -27,7 +34,7 @@ func writeError(c *fiber.Ctx, err error) error {
 			"error": apiErr.Message,
 			"code":  code,
 		}
-		if os.Getenv("ENV") != "production" && apiErr.Err != nil {
+		if !isProd && apiErr.Err != nil {
 			payload["detail"] = apiErr.Err.Error()
 		}
 		return c.Status(apiErr.Status).JSON(payload)
@@ -36,7 +43,7 @@ func writeError(c *fiber.Ctx, err error) error {
 		"error": "Internal server error",
 		"code":  "internal_error",
 	}
-	if os.Getenv("ENV") != "production" && err != nil {
+	if !isProd && err != nil {
 		payload["detail"] = err.Error()
 	}
 	return c.Status(500).JSON(payload)

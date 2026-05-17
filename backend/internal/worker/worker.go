@@ -3,10 +3,10 @@ package worker
 import (
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
+	"github.com/alpyxn/aeterna/backend/internal/config"
 	"github.com/alpyxn/aeterna/backend/internal/database"
 	"github.com/alpyxn/aeterna/backend/internal/models"
 	"github.com/alpyxn/aeterna/backend/internal/ports"
@@ -20,17 +20,20 @@ type Worker struct {
 	files    ports.FileServicePort
 	email    services.EmailService
 	webhook  services.WebhookService
+	cfg      config.Config
 }
 
 func New(
 	settings ports.SettingsServicePort,
 	webhooks ports.WebhookStorePort,
 	files ports.FileServicePort,
+	cfg config.Config,
 ) *Worker {
 	return &Worker{
 		settings: settings,
 		webhooks: webhooks,
 		files:    files,
+		cfg:      cfg,
 	}
 }
 
@@ -92,11 +95,7 @@ func (w *Worker) sendReminderEmail(settings models.Settings, msg models.Message,
 		remainingStr = fmt.Sprintf("%.0f minute(s)", remaining.Minutes())
 	}
 
-	baseURL := os.Getenv("BASE_URL")
-	if baseURL == "" {
-		baseURL = "http://localhost:5173"
-	}
-	quickLink := fmt.Sprintf("%s/api/quick-heartbeat/%s", baseURL, settings.HeartbeatToken)
+	quickLink := fmt.Sprintf("%s/api/quick-heartbeat/%s", w.cfg.Worker.BaseURL, settings.HeartbeatToken)
 
 	subject := "Check-in required"
 	body := fmt.Sprintf(`You have a scheduled message that will be sent in %s unless you confirm.

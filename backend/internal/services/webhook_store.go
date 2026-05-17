@@ -4,16 +4,22 @@ import (
 	"errors"
 	"net"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 
+	"github.com/alpyxn/aeterna/backend/internal/config"
 	"github.com/alpyxn/aeterna/backend/internal/database"
 	"github.com/alpyxn/aeterna/backend/internal/models"
 	"gorm.io/gorm"
 )
 
-type WebhookStore struct{}
+type WebhookStore struct {
+	cfg config.Config
+}
+
+func NewWebhookStore(cfg config.Config) WebhookStore {
+	return WebhookStore{cfg: cfg}
+}
 
 func (s WebhookStore) List(userID string) ([]models.Webhook, error) {
 	var items []models.Webhook
@@ -39,7 +45,7 @@ func (s WebhookStore) Create(userID string, item models.Webhook) (models.Webhook
 	if item.URL == "" {
 		return models.Webhook{}, BadRequest("Webhook URL is required", nil)
 	}
-	validatedURL, err := validateWebhookURL(item.URL)
+	validatedURL, err := validateWebhookURL(item.URL, s.cfg.Webhook.AllowlistHosts)
 	if err != nil {
 		return models.Webhook{}, err
 	}
@@ -76,7 +82,7 @@ func (s WebhookStore) Update(userID, id string, input models.Webhook) (models.We
 	if input.URL == "" {
 		return models.Webhook{}, BadRequest("Webhook URL is required", nil)
 	}
-	validatedURL, err := validateWebhookURL(input.URL)
+	validatedURL, err := validateWebhookURL(input.URL, s.cfg.Webhook.AllowlistHosts)
 	if err != nil {
 		return models.Webhook{}, err
 	}
@@ -113,7 +119,7 @@ func (s WebhookStore) Delete(userID, id string) error {
 	return nil
 }
 
-func validateWebhookURL(raw string) (string, error) {
+func validateWebhookURL(raw, rawAllowlist string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return "", BadRequest("Webhook URL is required", nil)
@@ -129,7 +135,7 @@ func validateWebhookURL(raw string) (string, error) {
 	}
 
 	hostname := strings.ToLower(parsed.Hostname())
-	if err := validateWebhookHostname(hostname); err != nil {
+	if err := validateWebhookHostname(hostname, rawAllowlist); err != nil {
 		return "", err
 	}
 
@@ -153,11 +159,11 @@ func validateWebhookURLFormat(parsed *url.URL) error {
 	return nil
 }
 
-func validateWebhookHostname(hostname string) error {
+func validateWebhookHostname(hostname, rawAllowlist string) error {
 	if hostname == "" {
 		return BadRequest("Invalid webhook URL host", nil)
 	}
-	if err := enforceWebhookAllowlist(hostname); err != nil {
+	if err := enforceWebhookAllowlist(hostname, rawAllowlist); err != nil {
 		return err
 	}
 	if hostname == "localhost" || strings.HasSuffix(hostname, ".localhost") || strings.HasSuffix(hostname, ".local") {
@@ -202,8 +208,8 @@ func validateWebhookIP(hostname string) error {
 	return nil
 }
 
-func enforceWebhookAllowlist(hostname string) error {
-	rawAllowlist := strings.TrimSpace(os.Getenv("WEBHOOK_ALLOWLIST_HOSTS"))
+func enforceWebhookAllowlist(hostname, rawAllowlist string) error {
+	rawAllowlist = strings.TrimSpace(rawAllowlist)
 	if rawAllowlist == "" {
 		return nil
 	}
