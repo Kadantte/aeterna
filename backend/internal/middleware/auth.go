@@ -17,11 +17,15 @@ func MasterAuth(auth ports.AuthServicePort, cfg config.Config) fiber.Handler {
 	isProd := cfg.IsProduction()
 	cookieSecureMode := cfg.Auth.CookieSecureMode
 	return func(c *fiber.Ctx) error {
+		if path := c.Path(); path == "/api/v2" || strings.HasPrefix(path, "/api/v2/") {
+			return c.Next()
+		}
+
 		if token := c.Cookies("aeterna_session"); token != "" {
 			userID, err := auth.VerifySessionToken(token)
 			if err == nil {
-				if err := enforceOriginAllowlist(c, allowedOrigins, isProd); err != nil {
-					return err
+				if !enforceOriginAllowlist(c, allowedOrigins, isProd) {
+					return nil
 				}
 				c.Locals("user_id", userID)
 				return c.Next()
@@ -36,7 +40,7 @@ func MasterAuth(auth ports.AuthServicePort, cfg config.Config) fiber.Handler {
 	}
 }
 
-func enforceOriginAllowlist(c *fiber.Ctx, allowedOrigins string, isProd bool) error {
+func enforceOriginAllowlist(c *fiber.Ctx, allowedOrigins string, isProd bool) bool {
 	origin := strings.TrimSpace(c.Get("Origin"))
 
 	if !isProd {
@@ -44,7 +48,7 @@ func enforceOriginAllowlist(c *fiber.Ctx, allowedOrigins string, isProd bool) er
 	}
 
 	if allowedOrigins == "*" {
-		return nil
+		return true
 	}
 
 	if origin == "" {
@@ -59,20 +63,22 @@ func enforceOriginAllowlist(c *fiber.Ctx, allowedOrigins string, isProd bool) er
 
 	if origin == "" {
 		if !isProd {
-			return nil
+			return true
 		}
-		return c.Status(403).JSON(fiber.Map{
+		_ = c.Status(403).JSON(fiber.Map{
 			"error": "Origin required",
 			"code":  "origin_required",
 		})
+		return false
 	}
 
 	parsed, err := url.Parse(origin)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return c.Status(403).JSON(fiber.Map{
+		_ = c.Status(403).JSON(fiber.Map{
 			"error": "Invalid origin",
 			"code":  "invalid_origin",
 		})
+		return false
 	}
 
 	if allowedOrigins == "" {
@@ -85,14 +91,15 @@ func enforceOriginAllowlist(c *fiber.Ctx, allowedOrigins string, isProd bool) er
 			continue
 		}
 		if origin == entry {
-			return nil
+			return true
 		}
 	}
 
-	return c.Status(403).JSON(fiber.Map{
+	_ = c.Status(403).JSON(fiber.Map{
 		"error": "Origin not allowed",
 		"code":  "origin_not_allowed",
 	})
+	return false
 }
 
 func clearSessionCookieWith(c *fiber.Ctx, cookieSecureMode string) {
@@ -130,4 +137,19 @@ func requestIsHTTPS(c *fiber.Ctx) bool {
 	}
 	first := strings.TrimSpace(strings.Split(forwardedProto, ",")[0])
 	return first == "https"
+}
+
+func ExtractBearerToken(header string) (string, bool) {
+	value := strings.TrimSpace(header)
+	if value == "" {
+		return "", false
+	}
+	if len(value) < 7 || !strings.EqualFold(value[:7], "Bearer ") {
+		return "", false
+	}
+	token := strings.TrimSpace(value[7:])
+	if token == "" {
+		return "", false
+	}
+	return token, true
 }

@@ -97,6 +97,9 @@ If you prefer not to use the automated installation script, you can deploy Aeter
    mkdir -p data secrets
    openssl rand -base64 32 | tr -d '\n' > secrets/encryption_key
    chmod 600 secrets/encryption_key
+   # Optional now, required when DB_ENCRYPTION_ENABLED=true and file doesn't exist:
+   # openssl rand -hex 32 | tr -d '\n' > secrets/db_kdf_context
+   # chmod 600 secrets/db_kdf_context
    ```
 
 3. **Create `.env`:**
@@ -112,6 +115,10 @@ If you prefer not to use the automated installation script, you can deploy Aeter
    DOMAIN=${SERVER_IP}
    ENV=production
    VITE_API_URL=/api
+   DB_ENCRYPTION_ENABLED=false
+   DB_ENCRYPTION_AUTO_MIGRATE=true
+   # Fixed path, do not change:
+   DB_ENCRYPTION_KDF_CONTEXT_FILE=./secrets/db_kdf_context
    # Must match exactly what you open in the browser
    ALLOWED_ORIGINS=http://${SERVER_IP}:5000,http://localhost:5000,http://127.0.0.1:5000
    BASE_URL=http://${SERVER_IP}:5000
@@ -143,6 +150,7 @@ If you prefer not to use the automated installation script, you can deploy Aeter
          - encryption_key
        volumes:
          - ./data:/app/data
+         - ./secrets:/app/secrets
        restart: always
        networks:
          - aeterna-net
@@ -266,6 +274,8 @@ This document also includes required `.env` values (`ALLOWED_ORIGINS`, `BASE_URL
 Aeterna handles security automatically:
 - **Encryption**: Messages and file attachments are encrypted at rest using AES-256-GCM.
 - **Key Management**: The encryption key is generated securely and stored in `secrets/encryption_key`. It is **never** exposed in environment variables or configuration files.
+- **SQLite Encryption (Optional)**: When `DB_ENCRYPTION_ENABLED=true`, Aeterna can encrypt the full SQLite file and auto-migrate plain/encrypted modes (`DB_ENCRYPTION_AUTO_MIGRATE=true`).
+- **DB KDF Context**: A stable KDF context file is stored at fixed path `secrets/db_kdf_context` (created once, reused on next starts) to derive the SQLite encryption key safely from the master key.
 - **Data Pruning**: File attachments are permanently deleted from the disk after successful delivery to the recipient.
 - **SSL**: Automatic certificate management via Let's Encrypt (in Production mode).
 

@@ -21,6 +21,7 @@ services:
       - encryption_key
     volumes:
       - ./data:/app/data
+      - ./secrets:/app/secrets
     restart: always
     networks:
       - aeterna-net

@@ -9,4 +9,8 @@ const (
 	DefaultLogMaxBackups   = 5
 	DefaultLogMaxAge       = 14
 	DefaultLogCompress     = true
+
+	DefaultDBEncryptionEnabled        = false
+	DefaultDBEncryptionAutoMigrate    = true
+	DefaultDBEncryptionKDFContextFile = "./secrets/db_kdf_context"
 )
