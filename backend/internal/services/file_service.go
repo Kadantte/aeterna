@@ -98,7 +98,7 @@ func (s FileService) Upload(userID, messageID, filename, mimeType string, data [
 		MimeType:    mimeType,
 	}
 
-	if err := database.DB.Create(&attachment).Error; err != nil {
+	if err := database.ForTenant(userID).Create(&attachment).Error; err != nil {
 		os.Remove(storagePath)
 		return models.Attachment{}, Internal("Failed to save attachment record", err)
 	}
@@ -121,7 +121,7 @@ func (s FileService) Delete(userID, attachmentID string) error {
 		slog.Error("Failed to remove attachment file", "path", attachment.StoragePath, "error", err)
 	}
 
-	if err := database.DB.Unscoped().Delete(&attachment).Error; err != nil {
+	if err := database.ForTenant(userID).Unscoped().Delete(&attachment).Error; err != nil {
 		return Internal("Failed to delete attachment record", err)
 	}
 
@@ -251,7 +251,7 @@ func (s FileService) UploadFarewellAttachment(userID, letterID, filename, mimeTy
 		MimeType:    mimeType,
 	}
 
-	if err := database.DB.Create(&attachment).Error; err != nil {
+	if err := database.ForTenant(userID).Create(&attachment).Error; err != nil {
 		os.Remove(storagePath)
 		return models.FarewellAttachment{}, Internal("Failed to save attachment record", err)
 	}
@@ -292,7 +292,7 @@ func (s FileService) DeleteFarewellAttachment(userID, attachmentID string) error
 		slog.Error("Failed to remove farewell attachment file", "path", attachment.StoragePath, "error", err)
 	}
 
-	if err := database.DB.Unscoped().Delete(&attachment).Error; err != nil {
+	if err := database.ForTenant(userID).Unscoped().Delete(&attachment).Error; err != nil {
 		return Internal("Failed to delete farewell attachment record", err)
 	}
 

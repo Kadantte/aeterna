@@ -54,7 +54,7 @@ func (s FarewellService) Create(userID, messageID, recipientEmail, subject, cont
 		Status:         models.FarewellStatusPending,
 	}
 
-	if err := database.DB.Create(&letter).Error; err != nil {
+	if err := database.ForTenant(userID).Create(&letter).Error; err != nil {
 		return models.FarewellLetter{}, Internal("Failed to create farewell letter", err)
 	}
 

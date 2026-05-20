@@ -2,6 +2,8 @@ package database
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,8 +12,14 @@ import (
 	"gorm.io/gorm"
 )
 
+func testSQLiteDSN(t *testing.T) string {
+	t.Helper()
+	replacer := strings.NewReplacer("/", "_", " ", "_")
+	return fmt.Sprintf("file:%s_%d?mode=memory&cache=shared&_foreign_keys=1", replacer.Replace(t.Name()), time.Now().UnixNano())
+}
+
 func TestScopeForUser_IsolatesRows(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(testSQLiteDSN(t)), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +56,7 @@ func TestScopeForUser_IsolatesRows(t *testing.T) {
 }
 
 func TestForTenant_EmptyUserID_MatchesNothing(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(testSQLiteDSN(t)), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +91,7 @@ func TestForTenant_EmptyUserID_MatchesNothing(t *testing.T) {
 }
 
 func TestForTenant_WrapsScopeForUser(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(testSQLiteDSN(t)), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}

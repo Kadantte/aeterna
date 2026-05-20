@@ -21,6 +21,7 @@ services:
       - encryption_key
     volumes:
       - ./data:/app/data
+      - ./secrets:/app/secrets
     ports:
       - "127.0.0.1:${BACKEND_PORT:-8080}:3000"
     restart: always

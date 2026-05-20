@@ -21,6 +21,9 @@ func TestDatabaseModule_LoadAndValidate(t *testing.T) {
 	t.Run("defaults in development mode", func(t *testing.T) {
 		t.Setenv("ENV", "")
 		t.Setenv("DATABASE_PATH", "")
+		t.Setenv("DB_ENCRYPTION_ENABLED", "")
+		t.Setenv("DB_ENCRYPTION_AUTO_MIGRATE", "")
+		t.Setenv("DB_ENCRYPTION_KDF_CONTEXT_FILE", "")
 		section, err := DatabaseModule{}.LoadAndValidate()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -30,6 +33,15 @@ func TestDatabaseModule_LoadAndValidate(t *testing.T) {
 		}
 		if section.PathIsSet {
 			t.Fatal("PathIsSet should be false when DATABASE_PATH is empty")
+		}
+		if section.EncryptionEnabled {
+			t.Fatal("EncryptionEnabled should default to false")
+		}
+		if !section.EncryptionAutoMigrate {
+			t.Fatal("EncryptionAutoMigrate should default to true")
+		}
+		if section.EncryptionKDFContextFile != common.DefaultDBEncryptionKDFContextFile {
+			t.Fatalf("EncryptionKDFContextFile = %q, want %q", section.EncryptionKDFContextFile, common.DefaultDBEncryptionKDFContextFile)
 		}
 	})
 
@@ -108,6 +120,28 @@ func TestDatabaseModule_LoadAndValidate(t *testing.T) {
 		}
 		if section.Path != "/data/trimmed.db" {
 			t.Fatalf("Path = %q, want trimmed %q", section.Path, "/data/trimmed.db")
+		}
+	})
+
+	t.Run("database encryption env vars are parsed and kdf context path is custom", func(t *testing.T) {
+		t.Setenv("ENV", "")
+		t.Setenv("DATABASE_PATH", "")
+		t.Setenv("DB_ENCRYPTION_ENABLED", "true")
+		t.Setenv("DB_ENCRYPTION_AUTO_MIGRATE", "false")
+		t.Setenv("DB_ENCRYPTION_KDF_CONTEXT_FILE", "/tmp/custom-kdf-context")
+
+		section, err := DatabaseModule{}.LoadAndValidate()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !section.EncryptionEnabled {
+			t.Fatal("EncryptionEnabled should be true")
+		}
+		if section.EncryptionAutoMigrate {
+			t.Fatal("EncryptionAutoMigrate should be false")
+		}
+		if section.EncryptionKDFContextFile != "/tmp/custom-kdf-context" {
+			t.Fatalf("EncryptionKDFContextFile = %q, want %q", section.EncryptionKDFContextFile, "/tmp/custom-kdf-context")
 		}
 	})
 }

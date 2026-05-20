@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"log"
+	"os"
 	"time"
 
 	"github.com/alpyxn/aeterna/backend/internal/config"
@@ -41,7 +42,27 @@ func main() {
 			"For more information, see: https://github.com/alpyxn/aeterna/blob/main/README.md", err)
 	}
 
-	database.Connect(cfg)
+	sqliteEnc := database.SQLiteEncryptionConfig{
+		Enabled:     cfg.Database.EncryptionEnabled,
+		AutoMigrate: cfg.Database.EncryptionAutoMigrate,
+	}
+
+	if sqliteEnc.Enabled {
+		sqlitePassphrase, err := services.PrepareSQLiteEncryptionPassphrase(cfg.Database.EncryptionKDFContextFile)
+		if err != nil {
+			log.Fatal("Failed to prepare SQLite encryption key material: ", err)
+		}
+		sqliteEnc.Passphrase = sqlitePassphrase
+	} else if _, statErr := os.Stat(cfg.Database.EncryptionKDFContextFile); statErr == nil {
+		// If a context file exists, derive passphrase so plain-mode auto-migrate can decrypt legacy encrypted DBs.
+		sqlitePassphrase, err := services.PrepareSQLiteEncryptionPassphrase(cfg.Database.EncryptionKDFContextFile)
+		if err != nil {
+			log.Fatal("Failed to derive SQLite passphrase from existing context: ", err)
+		}
+		sqliteEnc.Passphrase = sqlitePassphrase
+	}
+
+	database.Connect(cfg, sqliteEnc)
 
 	if err := database.DB.AutoMigrate(
 		&models.User{},
@@ -121,14 +142,14 @@ func main() {
 	if allowedOrigins == "*" {
 		app.Use(cors.New(cors.Config{
 			AllowOriginsFunc: func(origin string) bool { return true },
-			AllowHeaders:     "Origin, Content-Type, Accept",
+			AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
 			AllowMethods:     "GET, POST, PUT, DELETE, OPTIONS",
 			AllowCredentials: true,
 		}))
 	} else {
 		app.Use(cors.New(cors.Config{
 			AllowOrigins:     allowedOrigins,
-			AllowHeaders:     "Origin, Content-Type, Accept",
+			AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
 			AllowMethods:     "GET, POST, PUT, DELETE, OPTIONS",
 			AllowCredentials: true,
 		}))
@@ -149,6 +170,7 @@ func main() {
 	// SameSite=Strict is stronger than Lax and prevents CSRF for same-site origins.
 
 	api := app.Group("/api")
+	apiV2 := app.Group("/api/v2")
 
 	// Public routes
 	api.Get("/messages/:id", messageH.GetPublic)
@@ -163,40 +185,67 @@ func main() {
 	api.Get("/quick-heartbeat/:token", heartbeatH.QuickHeartbeat)
 	api.Post("/quick-heartbeat/:token", heartbeatH.QuickHeartbeat)
 
+	// Public routes (v2, token-oriented for mobile clients)
+	apiV2.Get("/messages/:id", messageH.GetPublic)
+	apiV2.Get("/setup/status", authH.SetupStatus)
+	apiV2.Post("/setup", authH.SetupMasterPasswordV2)
+	apiV2.Post("/auth/register", middleware.AuthRateLimiter, authH.RegisterV2)
+	apiV2.Post("/auth/login", middleware.AuthRateLimiter, authH.LoginV2)
+	apiV2.Post("/auth/reset-password", middleware.AuthRateLimiter, authH.ResetMasterPasswordV2)
+	apiV2.Get("/auth/session", authH.SessionStatusV2)
+	apiV2.Post("/auth/logout", authH.LogoutV2)
+
 	// Protected routes
 	mgmt := api.Group("/", middleware.MasterAuth(authSvc, cfg))
-	mgmt.Post("/messages", messageH.Create)
-	mgmt.Get("/messages", messageH.List)
-	mgmt.Delete("/messages/:id", messageH.Delete)
-	mgmt.Put("/messages/:id", messageH.Update)
-	mgmt.Post("/heartbeat", messageH.Heartbeat)
+	registerProtectedRoutes(mgmt, messageH, attachH, farewellH, webhookH, settingsH, heartbeatH, usersH)
 
-	mgmt.Post("/messages/:id/attachments", attachH.Upload)
-	mgmt.Get("/messages/:id/attachments", attachH.List)
-	mgmt.Delete("/messages/:id/attachments/:attachmentId", attachH.Delete)
-
-	mgmt.Get("/messages/:id/farewell-letters", farewellH.List)
-	mgmt.Post("/messages/:id/farewell-letters", farewellH.Create)
-	mgmt.Put("/messages/:id/farewell-letters/:letterId", farewellH.Update)
-	mgmt.Delete("/messages/:id/farewell-letters/:letterId", farewellH.Delete)
-	mgmt.Post("/messages/:id/farewell-letters/:letterId/attachments", farewellH.UploadAttachment)
-	mgmt.Get("/messages/:id/farewell-letters/:letterId/attachments", farewellH.ListAttachments)
-	mgmt.Delete("/messages/:id/farewell-letters/:letterId/attachments/:attachmentId", farewellH.DeleteAttachment)
-
-	mgmt.Get("/webhooks", webhookH.List)
-	mgmt.Post("/webhooks", webhookH.Create)
-	mgmt.Put("/webhooks/:id", webhookH.Update)
-	mgmt.Delete("/webhooks/:id", webhookH.Delete)
-
-	mgmt.Get("/settings", settingsH.Get)
-	mgmt.Post("/settings", settingsH.Save)
-	mgmt.Post("/settings/test", settingsH.TestSMTP)
-	mgmt.Get("/heartbeat-token", heartbeatH.GetToken)
-
-	mgmt.Get("/users", usersH.List)
-	mgmt.Delete("/users/:id", usersH.Delete)
+	// Protected routes (v2, accepts Authorization: Bearer <token>)
+	mgmtV2 := apiV2.Group("/", middleware.MasterAuthV2(authSvc, cfg))
+	registerProtectedRoutes(mgmtV2, messageH, attachH, farewellH, webhookH, settingsH, heartbeatH, usersH)
 
 	go w.Start()
 
 	log.Fatal(app.Listen(":3000"))
+}
+
+func registerProtectedRoutes(
+	group fiber.Router,
+	messageH *handlers.MessageHandlers,
+	attachH *handlers.AttachmentHandlers,
+	farewellH *handlers.FarewellHandlers,
+	webhookH *handlers.WebhookHandlers,
+	settingsH *handlers.SettingsHandlers,
+	heartbeatH *handlers.HeartbeatHandlers,
+	usersH *handlers.UserHandlers,
+) {
+	group.Post("/messages", messageH.Create)
+	group.Get("/messages", messageH.List)
+	group.Delete("/messages/:id", messageH.Delete)
+	group.Put("/messages/:id", messageH.Update)
+	group.Post("/heartbeat", messageH.Heartbeat)
+
+	group.Post("/messages/:id/attachments", attachH.Upload)
+	group.Get("/messages/:id/attachments", attachH.List)
+	group.Delete("/messages/:id/attachments/:attachmentId", attachH.Delete)
+
+	group.Get("/messages/:id/farewell-letters", farewellH.List)
+	group.Post("/messages/:id/farewell-letters", farewellH.Create)
+	group.Put("/messages/:id/farewell-letters/:letterId", farewellH.Update)
+	group.Delete("/messages/:id/farewell-letters/:letterId", farewellH.Delete)
+	group.Post("/messages/:id/farewell-letters/:letterId/attachments", farewellH.UploadAttachment)
+	group.Get("/messages/:id/farewell-letters/:letterId/attachments", farewellH.ListAttachments)
+	group.Delete("/messages/:id/farewell-letters/:letterId/attachments/:attachmentId", farewellH.DeleteAttachment)
+
+	group.Get("/webhooks", webhookH.List)
+	group.Post("/webhooks", webhookH.Create)
+	group.Put("/webhooks/:id", webhookH.Update)
+	group.Delete("/webhooks/:id", webhookH.Delete)
+
+	group.Get("/settings", settingsH.Get)
+	group.Post("/settings", settingsH.Save)
+	group.Post("/settings/test", settingsH.TestSMTP)
+	group.Get("/heartbeat-token", heartbeatH.GetToken)
+
+	group.Get("/users", usersH.List)
+	group.Delete("/users/:id", usersH.Delete)
 }

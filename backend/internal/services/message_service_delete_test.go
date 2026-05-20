@@ -1,6 +1,8 @@
 package services
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,9 +12,15 @@ import (
 	"gorm.io/gorm"
 )
 
+func testSQLiteDSN(t *testing.T) string {
+	t.Helper()
+	replacer := strings.NewReplacer("/", "_", " ", "_")
+	return fmt.Sprintf("file:%s_%d?mode=memory&cache=shared&_foreign_keys=1", replacer.Replace(t.Name()), time.Now().UnixNano())
+}
+
 func setupTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared&_foreign_keys=1"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(testSQLiteDSN(t)), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}

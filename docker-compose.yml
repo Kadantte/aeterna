@@ -11,6 +11,7 @@ services:
       - ENV=production
     volumes:
       - ./data:/app/data
+      - ./secrets:/app/secrets
     command: ["./main", "--encryption-key-file=/run/secrets/encryption_key"]
     secrets:
       - encryption_key
@@ -25,7 +26,7 @@ services:
       args:
         - VITE_API_URL=${VITE_API_URL}
     ports:
-      - "5173:80"
+      - "${FRONTEND_PORT:-5173}:80"
     depends_on:
       - backend
     environment:
@@ -40,4 +41,3 @@ secrets:
 networks:
   aeterna-net:
     driver: bridge
-

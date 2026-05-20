@@ -98,6 +98,11 @@ print_help() {
     echo "  --status         Check status of Aeterna services"
     echo "  --version, -v    Show version"
     echo ""
+    echo "Environment variables:"
+    echo "  DB_ENCRYPTION_ENABLED=true|false        Enable full SQLite file encryption (default: false)"
+    echo "  DB_ENCRYPTION_AUTO_MIGRATE=true|false   Auto-migrate plain/encrypted DB mode at startup (default: true)"
+    echo "  DB_ENCRYPTION_KDF_CONTEXT_FILE          Fixed to ./secrets/db_kdf_context"
+    echo ""
     echo "Examples:"
     echo "  $0               Run installation wizard"
     echo "  $0 --nginx       Install with nginx + automatic SSL (recommended)"
@@ -805,6 +810,58 @@ generate_encryption_key() {
     error "Failed to generate valid encryption key after $max_attempts attempts"
 }
 
+validate_db_kdf_context() {
+    local context_file="$1"
+    if [ ! -f "$context_file" ]; then
+        return 1
+    fi
+
+    local value
+    value=$(cat "$context_file" | tr -d '[:space:]')
+    if [ -z "$value" ]; then
+        return 1
+    fi
+    if [ "${#value}" -ne 64 ]; then
+        return 1
+    fi
+    if ! echo "$value" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+        return 1
+    fi
+
+    return 0
+}
+
+generate_db_kdf_context() {
+    local context_file="$1"
+
+    local temp_file="${context_file}.tmp"
+    local context_value
+    if ! context_value=$(openssl rand -hex 32 2>/dev/null); then
+        error "Failed to generate db encryption KDF context"
+    fi
+    context_value=$(echo "$context_value" | tr -d '[:space:]')
+
+    if [ "${#context_value}" -ne 64 ]; then
+        error "Generated db encryption KDF context has invalid length"
+    fi
+
+    if ! echo "$context_value" > "$temp_file" 2>/dev/null; then
+        error "Failed to write db encryption KDF context temporary file"
+    fi
+    if ! chmod 600 "$temp_file" 2>/dev/null; then
+        rm -f "$temp_file"
+        error "Failed to set permissions on db encryption KDF context file"
+    fi
+    if ! mv "$temp_file" "$context_file" 2>/dev/null; then
+        rm -f "$temp_file"
+        error "Failed to persist db encryption KDF context file"
+    fi
+
+    if ! validate_db_kdf_context "$context_file"; then
+        error "Generated db encryption KDF context is invalid"
+    fi
+}
+
 # Create environment file
 create_env_file() {
     step "Creating environment configuration..."
@@ -843,6 +900,9 @@ create_env_file() {
     fi
     
     local key_file="$INSTALL_DIR/secrets/encryption_key"
+    local db_encryption_enabled="${DB_ENCRYPTION_ENABLED:-false}"
+    local db_encryption_auto_migrate="${DB_ENCRYPTION_AUTO_MIGRATE:-true}"
+    local db_encryption_kdf_context_file="./secrets/db_kdf_context"
     
     if [ -f "$key_file" ]; then
         info "Encryption key file already exists, validating..."
@@ -868,6 +928,28 @@ create_env_file() {
     if ! validate_encryption_key "$key_file"; then
         error "Encryption key validation failed after generation"
     fi
+
+    if [[ "${db_encryption_enabled,,}" == "true" || "$db_encryption_enabled" == "1" || "${db_encryption_enabled,,}" == "yes" || "${db_encryption_enabled,,}" == "on" ]]; then
+        local kdf_context_file="$INSTALL_DIR/secrets/db_kdf_context"
+        if [ -f "$kdf_context_file" ]; then
+            info "DB encryption KDF context already exists, validating..."
+            if validate_db_kdf_context "$kdf_context_file"; then
+                info "Existing DB encryption KDF context is valid, preserving it"
+            else
+                warning "Existing DB encryption KDF context is invalid or corrupted"
+                if prompt_yn "Regenerate DB encryption KDF context?" "y"; then
+                    rm -f "$kdf_context_file"
+                    generate_db_kdf_context "$kdf_context_file"
+                    success "DB encryption KDF context regenerated"
+                else
+                    error "Cannot proceed with invalid DB encryption KDF context. Please fix or remove: $kdf_context_file"
+                fi
+            fi
+        else
+            generate_db_kdf_context "$kdf_context_file"
+            success "DB encryption KDF context generated at secrets/db_kdf_context"
+        fi
+    fi
     
     
     # Create .env file atomically
@@ -884,6 +966,9 @@ ACME_EMAIL=${ACME_EMAIL:-}
 # Database Configuration
 # SQLite database will be created automatically at ./data/aeterna.db
 # No database credentials needed for SQLite
+DB_ENCRYPTION_ENABLED=$db_encryption_enabled
+DB_ENCRYPTION_AUTO_MIGRATE=$db_encryption_auto_migrate
+DB_ENCRYPTION_KDF_CONTEXT_FILE=$db_encryption_kdf_context_file
 
 # Application Settings
 ENV=production
@@ -1447,6 +1532,37 @@ update_installation() {
             fi
         fi
     fi
+
+    local db_encryption_enabled_value="false"
+    if [ -f ".env" ]; then
+        db_encryption_enabled_value=$(grep "^DB_ENCRYPTION_ENABLED=" .env 2>/dev/null | cut -d'=' -f2- | tr -d '[:space:]' || echo "false")
+        if [ -z "$db_encryption_enabled_value" ]; then
+            db_encryption_enabled_value="false"
+        fi
+    fi
+
+    if [[ "${db_encryption_enabled_value,,}" == "true" || "$db_encryption_enabled_value" == "1" || "${db_encryption_enabled_value,,}" == "yes" || "${db_encryption_enabled_value,,}" == "on" ]]; then
+        local kdf_context_file="$install_path/secrets/db_kdf_context"
+        if [ -f "$kdf_context_file" ]; then
+            info "DB encryption KDF context file found, validating..."
+            if validate_db_kdf_context "$kdf_context_file"; then
+                info "Existing DB encryption KDF context is valid, preserving it"
+            else
+                warning "Existing DB encryption KDF context is invalid"
+                if prompt_yn "Regenerate DB encryption KDF context?" "y"; then
+                    rm -f "$kdf_context_file"
+                    generate_db_kdf_context "$kdf_context_file"
+                    warning "DB encryption KDF context regenerated"
+                else
+                    error "Cannot proceed with invalid DB encryption KDF context. Please fix or restore the original file."
+                fi
+            fi
+        else
+            warning "DB encryption is enabled and KDF context file is missing. Generating..."
+            generate_db_kdf_context "$kdf_context_file"
+            success "DB encryption KDF context generated"
+        fi
+    fi
     
     # Ensure data directory exists for SQLite database
     if ! mkdir -p "$install_path/data" 2>/dev/null; then
@@ -1535,6 +1651,7 @@ print_completion() {
     echo ""
     echo -e "  ${BOLD}🔐 Security:${NC}"
     echo "  • Encryption key stored in: $INSTALL_DIR/secrets/encryption_key"
+    echo "  • DB KDF context stored in: $INSTALL_DIR/secrets/db_kdf_context (when DB encryption is enabled)"
     echo "  • Keep this file secure! It's required to decrypt your messages."
     echo ""
     
