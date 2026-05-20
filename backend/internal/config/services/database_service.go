@@ -42,7 +42,7 @@ func (DatabaseModule) LoadAndValidate() (DatabaseSection, error) {
 
 		EncryptionEnabled:        common.GetBool("DB_ENCRYPTION_ENABLED", common.DefaultDBEncryptionEnabled),
 		EncryptionAutoMigrate:    common.GetBool("DB_ENCRYPTION_AUTO_MIGRATE", common.DefaultDBEncryptionAutoMigrate),
-		EncryptionKDFContextFile: common.DefaultDBEncryptionKDFContextFile,
+		EncryptionKDFContextFile: common.WithDefault(common.GetenvTrim("DB_ENCRYPTION_KDF_CONTEXT_FILE"), common.DefaultDBEncryptionKDFContextFile),
 	}
 	if common.GetenvTrim("ENV") == "production" && !section.PathIsSet {
 		return DatabaseSection{}, fmt.Errorf("DATABASE_PATH must be set in production")
