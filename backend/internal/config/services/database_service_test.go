@@ -123,7 +123,7 @@ func TestDatabaseModule_LoadAndValidate(t *testing.T) {
 		}
 	})
 
-	t.Run("database encryption env vars are parsed and kdf context path is fixed", func(t *testing.T) {
+	t.Run("database encryption env vars are parsed and kdf context path is custom", func(t *testing.T) {
 		t.Setenv("ENV", "")
 		t.Setenv("DATABASE_PATH", "")
 		t.Setenv("DB_ENCRYPTION_ENABLED", "true")
@@ -140,8 +140,8 @@ func TestDatabaseModule_LoadAndValidate(t *testing.T) {
 		if section.EncryptionAutoMigrate {
 			t.Fatal("EncryptionAutoMigrate should be false")
 		}
-		if section.EncryptionKDFContextFile != common.DefaultDBEncryptionKDFContextFile {
-			t.Fatalf("EncryptionKDFContextFile = %q, want %q", section.EncryptionKDFContextFile, common.DefaultDBEncryptionKDFContextFile)
+		if section.EncryptionKDFContextFile != "/tmp/custom-kdf-context" {
+			t.Fatalf("EncryptionKDFContextFile = %q, want %q", section.EncryptionKDFContextFile, "/tmp/custom-kdf-context")
 		}
 	})
 }
