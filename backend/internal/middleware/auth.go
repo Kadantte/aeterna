@@ -11,6 +11,13 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
+func unauthorizedResponse(c *fiber.Ctx) error {
+	return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+		"error": "Unauthorized access. Session required.",
+		"code":  "unauthorized",
+	})
+}
+
 // MasterAuth returns a middleware that validates the session cookie and enforces the origin allowlist.
 func MasterAuth(auth ports.AuthServicePort, cfg config.Config) fiber.Handler {
 	allowedOrigins := cfg.AllowedOriginsOrDefault()
@@ -33,10 +40,7 @@ func MasterAuth(auth ports.AuthServicePort, cfg config.Config) fiber.Handler {
 			clearSessionCookieWith(c, cookieSecureMode)
 		}
 
-		return c.Status(401).JSON(fiber.Map{
-			"error": "Unauthorized access. Session required.",
-			"code":  "unauthorized",
-		})
+		return unauthorizedResponse(c)
 	}
 }
 

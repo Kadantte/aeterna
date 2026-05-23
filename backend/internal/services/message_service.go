@@ -2,6 +2,7 @@ package services
 
 import (
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -16,6 +17,17 @@ var cryptoService = CryptoService{}
 var msgValidationService = ValidationService{}
 var msgFileService = FileService{}
 var msgSettingsService = SettingsService{}
+
+type attachCountRow struct {
+	MessageID string
+	Count     int64
+}
+
+type farewellCountRow struct {
+	MessageID        string
+	Total            int64
+	PendingFarewells int64
+}
 
 func (s MessageService) Create(userID string, content string, recipientEmails []string, triggerDuration int, reminders []int) (models.Message, error) {
 	settings, err := msgSettingsService.Get(userID)
@@ -144,16 +156,57 @@ func (s MessageService) List(userID string) ([]models.Message, error) {
 	if err := database.ForTenant(userID).Preload("Reminders").Order("created_at DESC").Find(&messages).Error; err != nil {
 		return nil, Internal("Failed to fetch messages", err)
 	}
+
+	if len(messages) == 0 {
+		return messages, nil
+	}
+
+	msgIDs := make([]string, len(messages))
 	for i := range messages {
 		decrypted, err := cryptoService.Decrypt(messages[i].Content)
 		if err != nil {
 			return nil, err
 		}
 		messages[i].Content = decrypted
-
-		count, _ := msgFileService.CountByMessageID(userID, messages[i].ID)
-		messages[i].AttachmentCount = count
+		msgIDs[i] = messages[i].ID
 	}
+
+	var attachCounts []attachCountRow
+	if err := database.ForTenant(userID).Model(&models.Attachment{}).
+		Select("message_id, COUNT(*) as count").
+		Where("message_id IN ?", msgIDs).
+		Group("message_id").
+		Scan(&attachCounts).Error; err != nil {
+		slog.Warn("Failed to batch-count attachments", "user_id", userID, "error", err)
+	}
+
+	attachMap := make(map[string]int64, len(attachCounts))
+	for _, r := range attachCounts {
+		attachMap[r.MessageID] = r.Count
+	}
+
+	var farewellCounts []farewellCountRow
+	if err := database.ForTenant(userID).Model(&models.FarewellLetter{}).
+		Select("message_id, COUNT(*) as total, COUNT(CASE WHEN status = ? THEN 1 END) as pending_farewells", models.FarewellStatusPending).
+		Where("message_id IN ?", msgIDs).
+		Group("message_id").
+		Scan(&farewellCounts).Error; err != nil {
+		slog.Warn("Failed to batch-count farewell letters", "user_id", userID, "error", err)
+	}
+
+	farewellMap := make(map[string]farewellCountRow, len(farewellCounts))
+	for _, r := range farewellCounts {
+		farewellMap[r.MessageID] = r
+	}
+
+	for i := range messages {
+		messages[i].AttachmentCount = attachMap[messages[i].ID]
+		if fc, ok := farewellMap[messages[i].ID]; ok {
+			messages[i].FarewellCount = fc.Total
+			messages[i].PendingFarewells = fc.PendingFarewells
+		}
+	}
+
 	return messages, nil
 }
 
