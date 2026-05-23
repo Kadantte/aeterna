@@ -2,6 +2,9 @@ package services
 
 import (
 	"errors"
+	"log/slog"
+	"os"
+	"path/filepath"
 
 	"github.com/alpyxn/aeterna/backend/internal/database"
 	"github.com/alpyxn/aeterna/backend/internal/models"
@@ -179,13 +182,31 @@ func (s FarewellService) CancelPending(userID, messageID, id string) error {
 		return BadRequest("Only pending farewell letters can be canceled", nil)
 	}
 
-	if err := farewellFileService.DeleteFarewellAttachmentsByLetterID(userID, id); err != nil {
-		return Internal("Failed to delete farewell attachments", err)
+	var attachments []models.FarewellAttachment
+	if err := database.ForTenant(userID).Where("letter_id = ?", id).Find(&attachments).Error; err != nil {
+		return Internal("Failed to fetch farewell attachments", err)
 	}
 
-	if err := database.ForTenant(userID).Unscoped().Delete(&letter).Error; err != nil {
-		return Internal("Failed to cancel farewell letter", err)
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := database.TenantTx(tx, userID).Unscoped().
+			Where("letter_id = ?", id).
+			Delete(&models.FarewellAttachment{}).Error; err != nil {
+			return Internal("Failed to delete farewell attachment records", err)
+		}
+		if err := database.TenantTx(tx, userID).Unscoped().Delete(&letter).Error; err != nil {
+			return Internal("Failed to cancel farewell letter", err)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
+
+	for _, att := range attachments {
+		if err := os.Remove(att.StoragePath); err != nil && !os.IsNotExist(err) {
+			slog.Error("Failed to remove farewell attachment file", "path", att.StoragePath, "error", err)
+		}
+	}
+	os.Remove(filepath.Join(farewellFileService.uploadsDir(), userID, "farewell", id))
 
 	return nil
 }
@@ -202,13 +223,50 @@ func (s FarewellService) CancelPendingByMessageID(userID, messageID string) (int
 		return 0, Internal("Failed to fetch pending farewell letters", err)
 	}
 
-	for _, letter := range letters {
-		if err := farewellFileService.DeleteFarewellAttachmentsByLetterID(userID, letter.ID); err != nil {
-			return 0, Internal("Failed to delete farewell attachments", err)
+	if len(letters) == 0 {
+		return 0, nil
+	}
+
+	letterIDs := make([]string, len(letters))
+	for i, l := range letters {
+		letterIDs[i] = l.ID
+	}
+
+	// Pre-fetch attachment records to collect file paths before any DB deletion.
+	var attachments []models.FarewellAttachment
+	if err := database.ForTenant(userID).
+		Where("letter_id IN ?", letterIDs).
+		Find(&attachments).Error; err != nil {
+		return 0, Internal("Failed to fetch farewell attachments", err)
+	}
+
+	// Delete all DB records atomically so a partial failure cannot leave orphaned rows.
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := database.TenantTx(tx, userID).Unscoped().
+			Where("letter_id IN ?", letterIDs).
+			Delete(&models.FarewellAttachment{}).Error; err != nil {
+			return Internal("Failed to delete farewell attachment records", err)
 		}
-		if err := database.ForTenant(userID).Unscoped().Delete(&letter).Error; err != nil {
-			return 0, Internal("Failed to cancel farewell letter", err)
+		if err := database.TenantTx(tx, userID).Unscoped().
+			Where("id IN ?", letterIDs).
+			Delete(&models.FarewellLetter{}).Error; err != nil {
+			return Internal("Failed to cancel farewell letters", err)
 		}
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+
+	// Filesystem cleanup runs after a successful commit; errors are logged but not fatal.
+	for _, att := range attachments {
+		if err := os.Remove(att.StoragePath); err != nil && !os.IsNotExist(err) {
+			slog.Error("Failed to remove farewell attachment file", "path", att.StoragePath, "error", err)
+		}
+	}
+	uploadsDir := farewellFileService.uploadsDir()
+	for _, id := range letterIDs {
+		letterDir := filepath.Join(uploadsDir, userID, "farewell", id)
+		os.Remove(letterDir)
 	}
 
 	return int64(len(letters)), nil

@@ -17,10 +17,7 @@ func MasterAuthV2(auth ports.AuthServicePort, cfg config.Config) fiber.Handler {
 		if token, ok := ExtractBearerToken(c.Get("Authorization")); ok {
 			userID, err := auth.VerifySessionToken(token)
 			if err != nil {
-				return c.Status(401).JSON(fiber.Map{
-					"error": "Unauthorized access. Session required.",
-					"code":  "unauthorized",
-				})
+				return unauthorizedResponse(c)
 			}
 			c.Locals("user_id", userID)
 			return c.Next()
@@ -38,9 +35,6 @@ func MasterAuthV2(auth ports.AuthServicePort, cfg config.Config) fiber.Handler {
 			clearSessionCookieWith(c, cookieSecureMode)
 		}
 
-		return c.Status(401).JSON(fiber.Map{
-			"error": "Unauthorized access. Session required.",
-			"code":  "unauthorized",
-		})
+		return unauthorizedResponse(c)
 	}
 }
