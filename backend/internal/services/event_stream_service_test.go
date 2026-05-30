@@ -48,6 +48,39 @@ func TestEventStreamService_EnforcesGlobalLimit(t *testing.T) {
 	}
 }
 
+func TestEventStreamService_SameClientIDDifferentUsersAreIsolated(t *testing.T) {
+	svc := newTestEventStreamService(10, 5, 4)
+
+	userOneCh, _, cancelOne, err := svc.Subscribe("u1", "same-client", "")
+	if err != nil {
+		t.Fatalf("subscribe for user u1 failed: %v", err)
+	}
+	defer cancelOne()
+
+	userTwoCh, _, cancelTwo, err := svc.Subscribe("u2", "same-client", "")
+	if err != nil {
+		t.Fatalf("subscribe for user u2 failed: %v", err)
+	}
+	defer cancelTwo()
+
+	svc.Publish("u1", ports.RealtimeEvent{Type: ports.EventTypeMessagesChanged})
+
+	select {
+	case evt := <-userOneCh:
+		if evt.Type != ports.EventTypeMessagesChanged {
+			t.Fatalf("expected %q for user u1, got %q", ports.EventTypeMessagesChanged, evt.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("user u1 did not receive event")
+	}
+
+	select {
+	case evt := <-userTwoCh:
+		t.Fatalf("user u2 should not receive user u1 event, got %q", evt.Type)
+	case <-time.After(250 * time.Millisecond):
+	}
+}
+
 func TestEventStreamService_DuplicateClientIDStopsPreviousStream(t *testing.T) {
 	svc := newTestEventStreamService(10, 5, 4)
 
@@ -74,6 +107,51 @@ func TestEventStreamService_DuplicateClientIDStopsPreviousStream(t *testing.T) {
 	case <-doneNew:
 		t.Fatal("new stream should remain active")
 	default:
+	}
+}
+
+func TestEventStreamService_OldCancelDoesNotRemoveReconnectedClient(t *testing.T) {
+	svc := newTestEventStreamService(10, 5, 4)
+
+	_, doneOld, cancelOld, err := svc.Subscribe("u1", "same-client", "")
+	if err != nil {
+		t.Fatalf("unexpected error on first subscribe: %v", err)
+	}
+	defer cancelOld()
+
+	newCh, doneNew, cancelNew, err := svc.Subscribe("u1", "same-client", "")
+	if err != nil {
+		t.Fatalf("unexpected error on second subscribe: %v", err)
+	}
+	defer cancelNew()
+
+	// Simulate delayed cleanup from the old connection.
+	cancelOld()
+
+	select {
+	case <-doneNew:
+		t.Fatal("new stream should remain active after old cancel")
+	default:
+	}
+
+	svc.Publish("u1", ports.RealtimeEvent{
+		Type: ports.EventTypeMessagesChanged,
+	})
+
+	select {
+	case evt := <-newCh:
+		if evt.Type != ports.EventTypeMessagesChanged {
+			t.Fatalf("expected %q, got %q", ports.EventTypeMessagesChanged, evt.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("new stream did not receive event after old cancel")
+	}
+
+	select {
+	case <-doneOld:
+		// expected old stream closure
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected old stream to be stopped after reconnect")
 	}
 }
 

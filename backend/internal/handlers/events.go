@@ -3,17 +3,22 @@ package handlers
 import (
 	"bufio"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/alpyxn/aeterna/backend/internal/ports"
+	"github.com/alpyxn/aeterna/backend/internal/services"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 )
 
 const (
 	defaultSSEHeartbeatInterval = 20 * time.Second
+	maxSSEClientIDLength        = 64
 )
+
+var sseClientIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]+$`)
 
 // EventsHandlers exposes user-scoped SSE streams.
 type EventsHandlers struct {
@@ -31,6 +36,11 @@ func (h *EventsHandlers) Stream(c *fiber.Ctx) error {
 	}
 	sessionKey := currentSessionKey(c)
 	clientID := strings.TrimSpace(c.Query("client_id"))
+	if clientID != "" {
+		if err := validateSSEClientID(clientID); err != nil {
+			return writeError(c, err)
+		}
+	}
 	if clientID == "" {
 		clientID = uuid.NewString()
 	}
@@ -68,12 +78,15 @@ func (h *EventsHandlers) Stream(c *fiber.Ctx) error {
 				if !ok {
 					return
 				}
+				// In Fiber/fasthttp, per-request Done() is not a reliable client-disconnect signal
+				// for SSE streams. The dependable disconnect detection is write/flush failure.
 				if err := writeSSEEvent(w, event); err != nil {
 					return
 				}
 			case <-done:
 				return
 			case <-heartbeat.C:
+				// Heartbeat writes are also used to detect stale/dead connections quickly via write errors.
 				if err := writeSSEEvent(w, ports.RealtimeEvent{
 					Type: ports.EventTypePing,
 					Code: ports.EventCodeStreamPing,
@@ -85,6 +98,19 @@ func (h *EventsHandlers) Stream(c *fiber.Ctx) error {
 		}
 	})
 
+	return nil
+}
+
+func validateSSEClientID(clientID string) error {
+	if clientID == "" {
+		return nil
+	}
+	if len(clientID) > maxSSEClientIDLength {
+		return services.BadRequest("Invalid client_id. Maximum length is 64 characters.", nil)
+	}
+	if !sseClientIDPattern.MatchString(clientID) {
+		return services.BadRequest("Invalid client_id. Allowed characters: letters, digits, '.', '_', ':', '-'.", nil)
+	}
 	return nil
 }
 

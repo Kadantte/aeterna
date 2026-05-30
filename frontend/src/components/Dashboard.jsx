@@ -5,7 +5,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter }
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogTitle, AlertDialogDescription, AlertDialogCancel, AlertDialogAction } from "@/components/ui/alert-dialog"
 import { Mail, Clock, Loader2, Trash2, Heart, AlertCircle, RefreshCw, Inbox, Eye, Pencil, Paperclip, X, Upload, Plus } from 'lucide-react';
-import { apiRequest, uploadFile, deleteAttachment, listAttachments, openEventsStream } from "@/lib/api";
+import { apiRequest, uploadFile, deleteAttachment, listAttachments, openEventsStream, getOrCreateSSEClientID } from "@/lib/api";
 import FarewellLetters from "@/components/FarewellLetters";
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { Textarea } from "@/components/ui/textarea"
@@ -60,10 +60,7 @@ export default function Dashboard() {
             }, 60000);
         };
 
-        const clientId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
-            ? globalThis.crypto.randomUUID()
-            : `web-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-
+        const clientId = getOrCreateSSEClientID();
         const stream = openEventsStream(clientId);
 
         const scheduleRefresh = () => {

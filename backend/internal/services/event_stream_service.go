@@ -94,7 +94,7 @@ func (s *EventStreamService) Subscribe(userID, clientID, sessionKey string) (<-c
 	s.totalConnections++
 
 	cancel := func() {
-		s.unsubscribe(userID, clientID)
+		s.unsubscribeClient(client)
 	}
 
 	return client.ch, client.done, cancel, nil
@@ -125,31 +125,34 @@ func (s *EventStreamService) Publish(userID string, event ports.RealtimeEvent) {
 		case client.ch <- event:
 		default:
 			// Slow consumers are disconnected to protect memory.
-			s.unsubscribe(client.userID, client.id)
+			s.unsubscribeClient(client)
 		}
 	}
 }
 
-func (s *EventStreamService) unsubscribe(userID, clientID string) {
-	if userID == "" || clientID == "" {
+func (s *EventStreamService) unsubscribeClient(client *eventClient) {
+	if client == nil || client.userID == "" || client.id == "" {
 		return
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	userClients := s.clients[userID]
+	userClients := s.clients[client.userID]
 	if userClients == nil {
 		return
 	}
-	client, ok := userClients[clientID]
+	current, ok := userClients[client.id]
 	if !ok {
 		return
 	}
+	if current != client {
+		return
+	}
 
-	delete(userClients, clientID)
+	delete(userClients, client.id)
 	if len(userClients) == 0 {
-		delete(s.clients, userID)
+		delete(s.clients, client.userID)
 	}
 	s.totalConnections--
 	client.stop()
