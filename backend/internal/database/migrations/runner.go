@@ -15,6 +15,17 @@ type Step struct {
 	Run         func(db *gorm.DB, cfg config.Config) error
 }
 
+var preAutoMigrateSteps = []Step{
+	{
+		Date:        "20260531",
+		Name:        "refresh_session_id_integrity_pre",
+		Description: "Repair malformed refresh_sessions schemas before GORM AutoMigrate touches the table.",
+		Run: func(db *gorm.DB, _ config.Config) error {
+			return EnsureRefreshSessionIDIntegrity(db)
+		},
+	},
+}
+
 var orderedSteps = []Step{
 	{
 		Date:        "20250508",
@@ -30,6 +41,16 @@ var orderedSteps = []Step{
 			return EnsureRefreshSessionIDIntegrity(db)
 		},
 	},
+}
+
+// RunPreAutoMigrate executes startup migrations that must happen before AutoMigrate.
+func RunPreAutoMigrate(db *gorm.DB, cfg config.Config) error {
+	for _, step := range preAutoMigrateSteps {
+		if err := step.Run(db, cfg); err != nil {
+			return fmt.Errorf("pre-migration %s_%s failed: %w", step.Date, step.Name, err)
+		}
+	}
+	return nil
 }
 
 // RunAll executes all startup migrations in deterministic date/name order.

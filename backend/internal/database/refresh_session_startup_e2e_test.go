@@ -66,8 +66,13 @@ func TestStartupMigrationPipeline_E2E_FromLegacyRefreshSessions(t *testing.T) {
 	}
 
 	// Real startup order in main.go:
-	// 1) AutoMigrate (adds missing columns),
-	// 2) RunMigrations (backfill + hardening).
+	// 1) RunPreAutoMigrate (sanitizes malformed/legacy refresh_sessions),
+	// 2) AutoMigrate (includes RefreshSession model),
+	// 3) RunMigrations (idempotent backfill + hardening).
+	if err := RunPreAutoMigrate(db, config.Config{}); err != nil {
+		t.Fatalf("startup pre-auto migrations failed: %v", err)
+	}
+
 	if err := db.AutoMigrate(
 		&models.User{},
 		&models.RefreshSession{},
@@ -114,6 +119,87 @@ func TestStartupMigrationPipeline_E2E_FromLegacyRefreshSessions(t *testing.T) {
 	if sessionID != "legacy-rs-1" {
 		t.Fatalf("expected backfilled session_id to equal row id, got %q", sessionID)
 	}
+}
+
+func TestStartupMigrationPipeline_E2E_FromForeignKeyRefreshSessions(t *testing.T) {
+	db := mustOpenTestDB(t)
+
+	if err := db.AutoMigrate(
+		&models.User{},
+		&models.Message{},
+		&models.MessageReminder{},
+		&models.Settings{},
+		&models.Webhook{},
+		&models.Attachment{},
+		&models.ApplicationSettings{},
+		&models.FarewellLetter{},
+		&models.FarewellAttachment{},
+	); err != nil {
+		t.Fatalf("bootstrap automigrate failed: %v", err)
+	}
+
+	user := models.User{
+		ID:           "u-startup-fk",
+		Email:        "startup-fk@example.com",
+		PasswordHash: "hash",
+	}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatalf("seed user failed: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if err := db.Exec(`
+		CREATE TABLE refresh_sessions (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			session_id TEXT NOT NULL,
+			token_hash TEXT NOT NULL,
+			expires_at DATETIME NOT NULL,
+			revoked_at DATETIME,
+			replaced_by_token_hash TEXT,
+			created_at DATETIME,
+			updated_at DATETIME,
+			FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+		);
+	`).Error; err != nil {
+		t.Fatalf("create fk schema failed: %v", err)
+	}
+	if err := db.Exec(`
+		INSERT INTO refresh_sessions (
+			id, user_id, session_id, token_hash, expires_at, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?);
+	`, "rs-startup-fk", user.ID, "sid-startup-fk", "hash-startup-fk", now.Add(time.Hour), now, now).Error; err != nil {
+		t.Fatalf("seed refresh session failed: %v", err)
+	}
+
+	if err := runStartupPipeline(db); err != nil {
+		t.Fatalf("startup pipeline failed: %v", err)
+	}
+	// Idempotency across restarts.
+	if err := runStartupPipeline(db); err != nil {
+		t.Fatalf("startup pipeline second run failed: %v", err)
+	}
+}
+
+func runStartupPipeline(db *gorm.DB) error {
+	if err := RunPreAutoMigrate(db, config.Config{}); err != nil {
+		return err
+	}
+	if err := db.AutoMigrate(
+		&models.User{},
+		&models.RefreshSession{},
+		&models.Message{},
+		&models.MessageReminder{},
+		&models.Settings{},
+		&models.Webhook{},
+		&models.Attachment{},
+		&models.ApplicationSettings{},
+		&models.FarewellLetter{},
+		&models.FarewellAttachment{},
+	); err != nil {
+		return err
+	}
+	return RunMigrations(db, config.Config{})
 }
 
 func mustOpenTestDB(t *testing.T) *gorm.DB {

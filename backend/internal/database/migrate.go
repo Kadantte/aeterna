@@ -6,6 +6,11 @@ import (
 	"gorm.io/gorm"
 )
 
+// RunPreAutoMigrate executes startup migrations that must run before AutoMigrate.
+func RunPreAutoMigrate(db *gorm.DB, cfg config.Config) error {
+	return migrations.RunPreAutoMigrate(db, cfg)
+}
+
 // RunMigrations executes ordered startup migrations from database/migrations.
 func RunMigrations(db *gorm.DB, cfg config.Config) error {
 	return migrations.RunAll(db, cfg)

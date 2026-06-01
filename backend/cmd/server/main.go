@@ -64,6 +64,10 @@ func main() {
 
 	database.Connect(cfg, sqliteEnc)
 
+	if err := database.RunPreAutoMigrate(database.DB, cfg); err != nil {
+		log.Fatal("Failed to run pre-auto migrations: ", err)
+	}
+
 	if err := database.DB.AutoMigrate(
 		&models.User{},
 		&models.RefreshSession{},
